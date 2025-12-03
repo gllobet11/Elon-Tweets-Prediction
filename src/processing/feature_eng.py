@@ -1,13 +1,17 @@
-import pandas as pd
-import numpy as np
 from datetime import timedelta
+
+import numpy as np
+import pandas as pd
+
 
 class FeatureEngineer:
     def __init__(self):
         # Parámetros por defecto detectados en tu notebook
         self.burst_quantile = 0.8
-        self.regime_lookback_weeks = 52 # Para no buscar cambios de régimen hace 10 años
-        
+        self.regime_lookback_weeks = (
+            52  # Para no buscar cambios de régimen hace 10 años
+        )
+
     def _calculate_regime_change(self, daily_series):
         """
         Detecta dinámicamente el cambio de régimen (caída brusca de tweets)
@@ -16,16 +20,16 @@ class FeatureEngineer:
         weekly = daily_series.resample("W-MON").sum()
         # Calculamos la diferencia semana a semana
         diffs = weekly.diff()
-        
+
         # Encontramos la semana con la caída más grande (el 'break')
         # Limitamos la búsqueda al último año para relevancia
         recent_diffs = diffs.tail(self.regime_lookback_weeks)
-        
+
         if recent_diffs.empty:
-            return daily_series.index.min() # Fallback al inicio si no hay datos
+            return daily_series.index.min()  # Fallback al inicio si no hay datos
 
         break_week = recent_diffs.idxmin()
-        
+
         # MANEJO DE NaT: Si idxmin devuelve NaT (ej. todos los diffs son NaN),
         # usamos el inicio de la serie como fecha de cambio de régimen.
         if pd.isna(break_week):
@@ -41,42 +45,90 @@ class FeatureEngineer:
         Replica la Celda 31.
         """
         df = df_raw.copy()
-        
+
         # Asegurar UTC y nombre de columna (manejo robusto de timezone)
-        if 'created_at' in df.columns:
-            df['created_at'] = pd.to_datetime(df['created_at'])
-            if df['created_at'].dt.tz is None:
+        if "created_at" in df.columns:
+            df["created_at"] = pd.to_datetime(df["created_at"])
+            if df["created_at"].dt.tz is None:
                 # Si es naive, localizar a UTC
-                df['created_at_utc'] = df['created_at'].dt.tz_localize('UTC')
+                df["created_at_utc"] = df["created_at"].dt.tz_localize("UTC")
             else:
                 # Si ya tiene tz, solo convertir a UTC
-                df['created_at_utc'] = df['created_at'].dt.tz_convert('UTC')
-        
+                df["created_at_utc"] = df["created_at"].dt.tz_convert("UTC")
+
         # Agrupar por día
         daily = df.groupby(df["created_at_utc"].dt.floor("D")).agg(
-            night_tweets=("created_at_utc", lambda s: ((s.dt.hour >= 0) & (s.dt.hour < 5)).sum()),
-            last_tweet_hour=("created_at_utc", lambda s: s.dt.hour.max())
+            night_tweets=(
+                "created_at_utc",
+                lambda s: ((s.dt.hour >= 0) & (s.dt.hour < 5)).sum(),
+            ),
+            last_tweet_hour=("created_at_utc", lambda s: s.dt.hour.max()),
         )
-        
+
         # Frecuencia diaria completa
         daily = daily.asfreq("D", fill_value=0)
-        
+
         # Asegurar que el índice de 'daily' sea timezone-naive antes de retornar
         daily.index = daily.index.tz_localize(None)
 
         # Features de sueño
         daily["sleep_debt"] = daily["night_tweets"].rolling(window=3).sum().shift(1)
         daily["sleep_debt_avg"] = daily["sleep_debt"] / 3.0
-        
+
         # Zombie Mode (basado en mediana histórica)
         median_debt = daily["sleep_debt_avg"].median()
         daily["zombie_mode"] = (daily["sleep_debt_avg"] > median_debt).astype(int)
-        
+
         # Late Night Flag
         daily["last_tweet_hour"] = daily["last_tweet_hour"].fillna(0)
         daily["late_night_flag"] = (daily["last_tweet_hour"] >= 2).astype(int).shift(1)
-        
+
         return daily[["sleep_debt_avg", "zombie_mode", "late_night_flag"]]
+
+    def add_regime_feature(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Crea una feature binaria 'is_high_regime' que es 1 si
+        la actividad actual rompe la normalidad estadística reciente
+        (Z-Score > 2.0).
+        También crea 'regime_intensity' como el valor del Z-Score.
+        """
+        # Calculamos el Z-Score sobre la serie diaria de n_tweets
+        # Usamos una ventana de 8 semanas (~2 meses) para la media y desviación estándar móvil.
+        # shift(1) para evitar "data leakage" (usar datos futuros para predecir el presente).
+        window_size = 3 * 7  # 3 semanas en días
+
+        rolling_mean = (
+            df["n_tweets"].rolling(window=window_size, min_periods=1).mean().shift(1)
+        )
+        rolling_std = (
+            df["n_tweets"].rolling(window=window_size, min_periods=1).std().shift(1)
+        )
+
+        # Evitar división por cero si la desviación estándar es 0
+        # Usamos una pequeña constante para evitar infinitos
+        safe_rolling_std = rolling_std.replace(
+            0, np.nan,
+        )  # Reemplazar 0 con NaN temporalmente
+
+        # Calcular Z-Score
+        z_score = (df["n_tweets"] - rolling_mean) / safe_rolling_std
+
+        # Llenar NaNs de z_score (primeros días, o std=0) con 0
+        df["regime_intensity"] = z_score.fillna(0)
+
+        # Feature Binaria: 1 si el Z-Score es mayor a un umbral (ej. 2 desviaciones estándar)
+        # Esto indica una actividad de tuits significativamente más alta de lo normal reciente.
+        df["is_high_regime"] = (df["regime_intensity"] > 2.0).astype(int)
+
+        # También podemos considerar un régimen bajo (caída significativa)
+        df["is_low_regime"] = (df["regime_intensity"] < -2.0).astype(int)
+
+        # Combinar para un cambio de régimen general (pico o caída)
+        df["is_regime_change"] = (
+            (df["is_high_regime"] == 1) | (df["is_low_regime"] == 1)
+        ).astype(int)
+
+        return df
 
     def process_data(self, df_raw):
         """
@@ -84,135 +136,143 @@ class FeatureEngineer:
         Replica la lógica robusta del notebook.
         """
         # --- PASO 1: Crear la serie diaria CANÓNICA y CONTINUA ---
-        if 'created_at' in df_raw.columns:
-            df_raw['created_at'] = pd.to_datetime(df_raw['created_at']).dt.tz_localize(None) # Asegurar timezone-naive
-        
-        # Nuevo: Cálculo de is_reply y text_clean para reply_ratio
-        df_raw['text_clean'] = df_raw['text'].astype(str).str.strip()
-        df_raw['is_reply'] = df_raw['text_clean'].str.contains(r'^.{0,15} @|RT\s@', regex=True, case=False, na=False)
+        if "created_at" in df_raw.columns:
+            df_raw["created_at"] = pd.to_datetime(df_raw["created_at"]).dt.tz_localize(
+                None,
+            )  # Asegurar timezone-naive
 
-        df_raw['date_utc'] = df_raw['created_at'].dt.floor('D')
-        
+        # Nuevo: Cálculo de is_reply y text_clean para reply_ratio
+        df_raw["text_clean"] = df_raw["text"].astype(str).str.strip()
+        df_raw["is_reply"] = df_raw["text_clean"].str.contains(
+            r"^.{0,15} @|RT\s@", regex=True, case=False, na=False,
+        )
+
+        df_raw["date_utc"] = df_raw["created_at"].dt.floor("D")
+
         # Crear conteos diarios incluyendo reply_count y hour_std
         daily_counts = (
-            df_raw.groupby('date_utc').agg(
-                n_tweets=('id', 'count'),
-                reply_count=('is_reply', 'sum'),
-                hour_std=('created_at', lambda x: x.dt.hour.std())
+            df_raw.groupby("date_utc")
+            .agg(
+                n_tweets=("id", "count"),
+                reply_count=("is_reply", "sum"),
+                hour_std=("created_at", lambda x: x.dt.hour.std()),
             )
             .sort_index()
         )
-        
+
         # PASO CRÍTICO: Reindexado (Serie Canónica)
         # Crea un índice completo desde el primer tweet hasta el último
-        full_idx = pd.date_range(start=daily_counts.index.min(), 
-                                 end=daily_counts.index.max(), 
-                                 freq='D')
-        
+        full_idx = pd.date_range(
+            start=daily_counts.index.min(), end=daily_counts.index.max(), freq="D",
+        )
+
         # Reindexar: Esto crea las filas faltantes y pone 0 en n_tweets, reply_count y NaN en hour_std
         daily_counts = daily_counts.reindex(full_idx, fill_value=0)
         # Los días reindexados que no tenían tweets tendrán NaN en hour_std, los rellenamos con 0
-        daily_counts['hour_std'] = daily_counts['hour_std'].fillna(0)
+        daily_counts["hour_std"] = daily_counts["hour_std"].fillna(0)
 
         # Nombrar el índice para claridad
-        daily_counts.index.name = 'date'
+        daily_counts.index.name = "date"
 
         # --- PASO 2: Construir TODAS las features sobre la serie continua ---
-        
-        # Detectar Régimen (se necesita para una feature más adelante)
-        regime_start = self._calculate_regime_change(daily_counts['n_tweets'])
-        print(f"-> Regime Change Detected: {regime_start.date()}")
-        
+
         df = daily_counts.copy()
-        
+
+        # Features de Cambio de Régimen (basadas en Z-Score Móvil)
+        df = self.add_regime_feature(df)
+
         # Features Externas (calculadas a partir del raw y unidas) - si las hubiera
-        ext_features = self.build_external_features(df_raw) # Esto ya lo tenias
+        ext_features = self.build_external_features(df_raw)  # Esto ya lo tenias
         # Asegurarse de que el índice de ext_features también sea datetime-naive para la unión
         ext_features.index = ext_features.index.tz_localize(None)
         df = df.join(ext_features, how="left")
-        
+
         # Rellenar NaNs en features externas (para días sin tweets)
         ext_feature_cols = ["sleep_debt_avg", "zombie_mode", "late_night_flag"]
         df[ext_feature_cols] = df[ext_feature_cols].fillna(0)
-        
+
         # Features Internas (Lags, Rolling, etc.)
         df["trend"] = np.arange(len(df))
         for lag in [1, 2, 7]:
             df[f"lag_{lag}"] = df["n_tweets"].shift(lag)
-            
+
         df["roll_mean_3"] = df["n_tweets"].rolling(3).mean().shift(1)
         df["roll_mean_7"] = df["n_tweets"].rolling(7).mean().shift(1)
-        df["momentum"] = df["roll_mean_3"] - df["roll_mean_7"] # Added momentum calculation
-        df["roll_std_7"]  = df["n_tweets"].rolling(7).std().shift(1)
-        df["roll_sum_7"]  = df["n_tweets"].rolling(7).sum().shift(1)
+        df["momentum"] = (
+            df["roll_mean_3"] - df["roll_mean_7"]
+        )  # Added momentum calculation
+        df["roll_std_7"] = df["n_tweets"].rolling(7).std().shift(1)
+        df["roll_sum_7"] = df["n_tweets"].rolling(7).sum().shift(1)
         df["roll_sum_14"] = df["n_tweets"].rolling(14).sum().shift(1)
-        
+
         df["delta_7_14"] = df["roll_sum_7"] - (df["roll_sum_14"] / 2.0)
         df["ratio_mean_3_7"] = df["roll_mean_3"] / df["roll_mean_7"]
         df["cv_7"] = df["roll_std_7"] / df["roll_mean_7"]
-        
+
         df.replace([np.inf, -np.inf], np.nan, inplace=True)
-        df[['ratio_mean_3_7', 'cv_7']] = df[['ratio_mean_3_7', 'cv_7']].fillna(0)
-        
+        df[["ratio_mean_3_7", "cv_7"]] = df[["ratio_mean_3_7", "cv_7"]].fillna(0)
+
         df["is_spike_1"] = (df["lag_1"] > df["roll_mean_7"]).astype(int)
-        
+
         threshold = df["n_tweets"].quantile(self.burst_quantile)
         df["is_burst_today"] = (df["n_tweets"] > threshold).astype(int)
-        
+
         df["last_burst"] = (
-            df["is_burst_today"]
-            .rolling(7)
-            .max()
-            .shift(1)
-            .fillna(0)
+            df["is_burst_today"].rolling(7).max().shift(1).fillna(0)
         ).astype(int)
-        
+
         grp = df["last_burst"].cumsum()
         df["days_since_burst"] = (
-            (~df["last_burst"].astype(bool))
-            .groupby(grp)
-            .cumsum()
-        ).shift(1).fillna(0)
-        
+            ((~df["last_burst"].astype(bool)).groupby(grp).cumsum()).shift(1).fillna(0)
+        )
+
         df["dow"] = df.index.dayofweek
-        df["post_regime"] = (df.index >= regime_start).astype(int)
-        
+        df["is_weekend"] = (df.index.dayofweek >= 5).astype(int)
+
         # Nuevas features: reply_ratio y hour_std_feature
         # Asegurarse de evitar división por cero en reply_ratio y rellenar NaN de shifts
-        df['reply_ratio'] = (df['reply_count'] / df['n_tweets'].replace(0, 1)).shift(1)
-        df['hour_std_feature'] = df['hour_std'].shift(1)
-        
+        df["reply_ratio"] = (df["reply_count"] / df["n_tweets"].replace(0, 1)).shift(1)
+        df["hour_std_feature"] = df["hour_std"].shift(1)
+
         # Rellenar NaNs para las nuevas características antes del final dropna
-        df['reply_ratio'] = df['reply_ratio'].fillna(0)
-        df['hour_std_feature'] = df['hour_std_feature'].fillna(0)
+        df["reply_ratio"] = df["reply_ratio"].fillna(0)
+        df["hour_std_feature"] = df["hour_std_feature"].fillna(0)
 
         print(f"DEBUG: Full features shape before final dropna: {df.shape}")
         print(f"DEBUG: Max date before final dropna: {df.index.max()}")
-        
+
         # Rellenar los NaNs iniciales resultantes de lags/rolling con 0 (general)
         df = df.fillna(0)
-        
-        final_df = df.dropna(subset=['roll_sum_14'])
+
+        final_df = df.dropna(subset=["roll_sum_14"])
         print(f"DEBUG: Max date after final dropna: {final_df.index.max()}")
 
         return final_df
-
 
     def get_latest_features(self, df_raw):
         """
         Retorna la ÚLTIMA fila de features procesadas, filtrando solo las relevantes para el modelo.
         """
         full_features = self.process_data(df_raw)
-        
+
         # Las features que el modelo de inferencia espera son: 'const', 'lag_1', 'last_burst'
         # Aquí solo nos encargamos de 'lag_1' y 'last_burst'. 'const' se añade en inference.py
-        model_required_features = ['lag_1', 'last_burst']
-        
+        model_required_features = [
+            "lag_1",
+            "roll_sum_7",
+            "momentum",
+            "last_burst",
+            "is_high_regime",
+            "is_regime_change",
+        ]
+
         # Filtramos el DataFrame para que solo contenga las columnas que el modelo necesita
         # Esto evita que `dropna` elimine filas por NaNs en columnas irrelevantes.
         filtered_features = full_features[model_required_features].dropna()
 
         if filtered_features.empty:
-            raise ValueError("❌ No hay suficientes datos limpios para generar las features necesarias para el modelo.")
+            raise ValueError(
+                "❌ No hay suficientes datos limpios para generar las features necesarias para el modelo.",
+            )
 
         return filtered_features.iloc[[-1]]

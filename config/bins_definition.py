@@ -1,10 +1,9 @@
-import numpy as np
 
 # ==========================================
 # 1. CONFIGURACIÓN DE ESTRATEGIA
 # ==========================================
 MIN_EDGE_TO_TRADE = 0.20  # 20% de diferencia (alpha) para entrar
-MAX_POSITION_SIZE = 100   # USDC por bet
+MAX_POSITION_SIZE = 100  # USDC por bet
 
 # ==========================================
 # 2. GENERADOR DE BINS (140 hasta 500+)
@@ -20,15 +19,15 @@ MARKET_BINS = {}
 # A) Generación automática de bins intermedios (140-159, 160-179... 480-499)
 for lower_bound in range(START_BIN, END_BIN, STEP):
     upper_bound = lower_bound + STEP
-    
+
     # Etiqueta estilo Polymarket: "140-159"
     # Ahora formateamos los números con comas para que coincidan con la API
     label = f"{lower_bound:,}-{upper_bound - 1:,}"
-    
+
     MARKET_BINS[label] = {
-        "id": None,          # <--- AQUÍ SE RELLENARÁ AUTOMÁTICAMENTE O A MANO
+        "id": None,  # <--- AQUÍ SE RELLENARÁ AUTOMÁTICAMENTE O A MANO
         "lower": lower_bound,
-        "upper": upper_bound # Usamos el límite exclusivo para cálculo de CDF
+        "upper": upper_bound,  # Usamos el límite exclusivo para cálculo de CDF
     }
 
 # B) Agregar el Bin Final (500+)
@@ -36,7 +35,7 @@ for lower_bound in range(START_BIN, END_BIN, STEP):
 MARKET_BINS["500+"] = {
     "id": None,
     "lower": 500,
-    "upper": 10000 # Un número suficientemente grande para simular infinito en la CDF
+    "upper": 10000,  # Un número suficientemente grande para simular infinito en la CDF
 }
 
 # ==========================================

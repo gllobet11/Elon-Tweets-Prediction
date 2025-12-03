@@ -1,11 +1,11 @@
-import sys
 import os
-import pandas as pd
+import sys
 
 # Añadir el root del proyecto al path para encontrar 'src'
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.ingestion.unified_feed import load_unified_data
+
 
 def verify_unified_data_ingestion():
     """
@@ -13,7 +13,7 @@ def verify_unified_data_ingestion():
     Llama a `load_unified_data` y reporta la estructura del DataFrame resultante.
     """
     print("--- Verificación de Unified Data Feed ---")
-    
+
     try:
         # 1. Ejecutar la función de unificación
         df_unified = load_unified_data()
@@ -28,10 +28,13 @@ def verify_unified_data_ingestion():
             print(f"\nFecha Mínima: {df_unified['created_at'].min()}")
             print(f"Fecha Máxima: {df_unified['created_at'].max()}")
         else:
-            print("❌ La función `load_unified_data` retornó un DataFrame vacío o None.")
+            print(
+                "❌ La función `load_unified_data` retornó un DataFrame vacío o None.",
+            )
 
     except Exception as e:
         print(f"\n❌ Ocurrió un error fatal durante la verificación: {e}")
+
 
 if __name__ == "__main__":
     verify_unified_data_ingestion()

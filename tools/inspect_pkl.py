@@ -1,5 +1,6 @@
-import pickle
 import os
+import pickle
+
 
 def inspect_pkl_file():
     """
@@ -7,7 +8,7 @@ def inspect_pkl_file():
     """
     # Find the latest model file
     try:
-        model_files = glob.glob('best_prophet_model_*.pkl')
+        model_files = glob.glob("best_prophet_model_*.pkl")
         if not model_files:
             print("❌ No model .pkl file found.")
             return
@@ -15,10 +16,10 @@ def inspect_pkl_file():
         latest_model_path = max(model_files, key=os.path.getmtime)
         print(f"🔍 Inspecting file: {latest_model_path}")
 
-        with open(latest_model_path, 'rb') as f:
+        with open(latest_model_path, "rb") as f:
             loaded_object = pickle.load(f)
 
-        print(f"\n✅ Object loaded successfully.")
+        print("\n✅ Object loaded successfully.")
         print(f"   -> Type of loaded object: {type(loaded_object)}")
 
         if isinstance(loaded_object, dict):
@@ -32,6 +33,8 @@ def inspect_pkl_file():
     except Exception as e:
         print(f"❌ An error occurred: {e}")
 
+
 if __name__ == "__main__":
     import glob
+
     inspect_pkl_file()

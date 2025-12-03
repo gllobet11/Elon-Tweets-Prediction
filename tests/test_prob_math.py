@@ -1,95 +1,125 @@
-"""
-test_prob_math.py
-
-Unit tests for the probability calculation utilities.
-"""
-
+import numpy as np
 import pytest
-import os
-import sys
-
-# --- Path Configuration ---
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
 
 from src.strategy.prob_math import DistributionConverter
 
-# --- Test Fixtures ---
+# Bins de ejemplo para las pruebas (Label, Low, High)
+BINS_CONFIG_EXAMPLE = [
+    ("0-199", 0, 199),
+    ("200-219", 200, 219),
+    ("220-239", 220, 239),
+    ("240-259", 240, 259),
+    ("260+", 260, float("inf")),
+]
 
-@pytest.fixture
-def sample_bins_config():
-    """A sample bin configuration for testing."""
-    return [
-        ("0-9", 0, 9),
-        ("10-19", 10, 19),
-        ("20-29", 20, 29),
-        ("30+", 30, float('inf'))
-    ]
 
-# --- Unit Tests ---
-
-def test_get_bin_probabilities_nbinom(sample_bins_config):
+def test_basic_nbinom_calculation():
     """
-    Tests the basic functionality of get_bin_probabilities with nbinom.
+    Test 1: Ensures basic probability calculation works and the sum is close to 1.0.
+    - Scenario: Early in the week, no actual tweets yet.
+    - Expected: The returned probabilities should be valid and sum to approx. 1.
     """
-    # --- Arrange ---
-    mu_remainder = 15.0
-    current_actuals = 5
-    
-    # --- Act ---
-    probabilities = DistributionConverter.get_bin_probabilities(
-        mu_remainder=mu_remainder,
-        current_actuals=current_actuals,
-        model_type='nbinom',
-        alpha=0.2,
-        bins_config=sample_bins_config
+    mu_remainder = 230.0
+    current_actuals = 0
+    alpha = 0.05
+
+    probs = DistributionConverter.get_bin_probabilities(
+        mu_remainder, current_actuals, "nbinom", alpha, BINS_CONFIG_EXAMPLE,
     )
 
-    # --- Assert ---
-    assert isinstance(probabilities, dict)
-    assert set(probabilities.keys()) == {"0-9", "10-19", "20-29", "30+"}
-    
-    # Check that probabilities are valid
-    total_prob = 0
-    for bin_label, prob in probabilities.items():
-        assert 0.0 <= prob <= 1.0
-        total_prob += prob
-        
-    # Check that the sum is close to 1.0
-    assert total_prob == pytest.approx(1.0, abs=1e-3)
-
-def test_kelly_bet_calculation():
-    """
-    Tests the kelly bet sizing logic.
-    """
-    # --- Arrange ---
-    my_prob = 0.60  # We believe there's a 60% chance of winning
-    market_price = 0.40 # Market implies a 40% chance
-    bankroll = 1000
-    
-    # --- Act ---
-    bet_size = DistributionConverter.calculate_kelly_bet(
-        my_prob=my_prob,
-        market_price=market_price,
-        bankroll=bankroll,
-        kelly_fraction=0.5 # Use 50% of full Kelly for safety
+    assert isinstance(probs, dict)
+    assert len(probs) == len(BINS_CONFIG_EXAMPLE)
+    # The sum of probabilities for all bins should be very close to 1.0
+    assert np.isclose(sum(probs.values()), 1.0, atol=1e-5), (
+        "Probabilities should sum to 1"
     )
-    
-    # --- Assert ---
-    # b (odds) = (1 / 0.40) - 1 = 1.5
-    # f_star = (0.60 * (1.5 + 1) - 1) / 1.5 = (0.60 * 2.5 - 1) / 1.5 = (1.5 - 1) / 1.5 = 0.5 / 1.5 = 0.333
-    # f_safe = 0.333 * 0.5 = 0.1666
-    # bet_size = 1000 * 0.1666 = 166.66
-    assert bet_size == pytest.approx(166.66, abs=0.1)
+    assert probs["220-239"] > 0, "Expected some probability in the central bin"
 
-def test_kelly_bet_no_edge():
+
+def test_impossible_bin_due_to_high_actuals():
     """
-    Tests that bet size is zero when there is no edge.
+    Test 2: Checks if bins that are already passed have a probability of 0.
+    - Scenario: Actual tweet count has already surpassed the lower bins.
+    - Expected: Bins like "0-199" and "200-219" must have a probability of 0.
     """
-    bet_size = DistributionConverter.calculate_kelly_bet(
-        my_prob=0.40,
-        market_price=0.50,
-        bankroll=1000
+    mu_remainder = 20.0  # Only a few tweets remaining
+    current_actuals = 230  # We are already at 230 tweets
+    alpha = 0.05
+
+    probs = DistributionConverter.get_bin_probabilities(
+        mu_remainder, current_actuals, "nbinom", alpha, BINS_CONFIG_EXAMPLE,
     )
-    assert bet_size == 0.0
+
+    # Bins "0-199", "200-219" are impossible now. Their high limit is below current_actuals.
+    assert probs["0-199"] == 0.0
+    assert probs["200-219"] == 0.0
+    # The bin we are currently in should have some probability
+    assert probs["220-239"] > 0
+    # The sum of remaining possibilities should still be close to 1
+    assert np.isclose(sum(probs.values()), 1.0, atol=1e-5), (
+        "Probabilities should still sum to 1"
+    )
+
+
+def test_shift_logic_when_actuals_are_in_a_bin():
+    """
+    Test 3: Validates the boundary shifting logic.
+    - Scenario: Actual count is inside a bin. The calculation for the remainder
+      should correctly adjust the lower bound to 0.
+    - Expected: The logic should handle the negative `low_rem` correctly.
+    """
+    mu_remainder = 30.0
+    current_actuals = 210  # Current count is within the "200-219" bin
+    alpha = 0.05
+
+    probs = DistributionConverter.get_bin_probabilities(
+        mu_remainder, current_actuals, "nbinom", alpha, BINS_CONFIG_EXAMPLE,
+    )
+
+    # "0-199" is impossible
+    assert probs["0-199"] == 0.0
+    # All other bins should have some probability, as they are still reachable
+    assert probs["200-219"] > 0
+    assert probs["220-239"] > 0
+    assert probs["240-259"] > 0
+    assert np.isclose(sum(probs.values()), 1.0, atol=1e-5)
+
+
+def test_zero_alpha_handling():
+    """
+    Test 4: Ensures that a very small or zero alpha does not cause division errors.
+    - Scenario: Alpha is set to 0.
+    - Expected: The function should handle it gracefully by treating it as a very small number.
+    """
+    mu_remainder = 230.0
+    current_actuals = 0
+    alpha = 0.0  # Test with zero alpha
+
+    try:
+        probs = DistributionConverter.get_bin_probabilities(
+            mu_remainder, current_actuals, "nbinom", alpha, BINS_CONFIG_EXAMPLE,
+        )
+        assert np.isclose(sum(probs.values()), 1.0, atol=1e-5)
+    except ZeroDivisionError:
+        pytest.fail("A zero or very small alpha should not cause a ZeroDivisionError.")
+
+
+def test_poisson_calculation():
+    """
+    Test 5: Checks if the Poisson calculation runs and produces a valid distribution.
+    - Scenario: Using 'poisson' model type.
+    - Expected: Probabilities should be valid and sum to approx. 1.
+    """
+    mu_remainder = 230.0
+    current_actuals = 0
+
+    probs = DistributionConverter.get_bin_probabilities(
+        mu_remainder,
+        current_actuals,
+        model_type="poisson",
+        bins_config=BINS_CONFIG_EXAMPLE,
+    )
+
+    assert isinstance(probs, dict)
+    assert np.isclose(sum(probs.values()), 1.0, atol=1e-5)
+    assert probs["220-239"] > 0

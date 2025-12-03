@@ -1,0 +1,37 @@
+[tool.ruff]
+# Assume Python 3.9
+target-version = "py39"
+
+[tool.ruff.lint]
+# Enable all checks by default.
+select = ["ALL"]
+ignore = [
+    "E501",  # Line too long (handled by formatter, or let formatter fix)
+    "W292",  # No newline at end of file (handled by formatter)
+    "FBT001", # Boolean positional argument in function definition
+    "FBT002", # Boolean default value in function definition
+    "ANN", # missing type annotation
+    "D", # Missing docstrings
+    "TD", # Missing TODO
+    "FIX", # Missing FIX
+    "ERA", # Removed assignment
+    "PGH003", # Use `typing.Dict` instead of `dict` for type hints
+    "COM812", # Trailing comma (conflicts with formatter)
+]
+
+# Allow unused variables when prefaced with underscore.
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.lint.per-file-ignores]
+# Allow specific rules to be ignored in certain files.
+"__init__.py" = ["F401", "F403"] # F401: `from .foo import *` is fine in __init__.py
+"tests/*" = ["S101", "PLR2004", "ANN"] # S101: Use of `assert` is fine in tests, PLR2004: magic value in comparison, ANN: missing type annotation
+"tools/*" = ["T20", "ANN"] # T20: print statement, ANN: missing type annotation
+"notebooks/*" = ["ALL"] # Ignore all rules in notebooks.
+
+[tool.ruff.format]
+# Like Black, use double quotes for strings.
+quote-style = "double"
+indent-style = "space"
+# Like Black, visualize line length limits.
+line-ending = "lf"
