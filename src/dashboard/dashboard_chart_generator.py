@@ -123,3 +123,34 @@ class DashboardChartGenerator:
         ).interactive()
 
         return final_chart
+
+    def generate_historical_week_chart(self, daily_data_for_week: pd.DataFrame) -> alt.Chart:
+        """
+        Generates a bar chart for the daily tweet activity of a selected historical week.
+
+        Args:
+            daily_data_for_week (pd.DataFrame): DataFrame containing daily tweet counts for the week.
+
+        Returns:
+            alt.Chart: An Altair bar chart object.
+        """
+        # Ensure the DataFrame is not empty and has the expected column
+        if daily_data_for_week.empty or 'n_tweets' not in daily_data_for_week.columns:
+            return alt.Chart(pd.DataFrame()).mark_text(text="No data to display.")
+
+        # Prepare data for Altair
+        data_to_plot = daily_data_for_week.reset_index().rename(columns={'index': 'date'})
+
+        chart = alt.Chart(data_to_plot).mark_bar().encode(
+            x=alt.X('date:T', axis=alt.Axis(title='Date', format='%Y-%m-%d')),
+            y=alt.Y('n_tweets:Q', axis=alt.Axis(title='Number of Tweets')),
+            tooltip=[
+                alt.Tooltip('date:T', title='Date'),
+                alt.Tooltip('n_tweets:Q', title='Tweets')
+            ]
+        ).properties(
+            title='Daily Tweet Activity for Selected Week',
+            height=300
+        )
+        
+        return chart

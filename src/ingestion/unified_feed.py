@@ -24,23 +24,31 @@ def load_unified_data():
         return pd.DataFrame()
 
     try:
-        # Cargar los datos sin parsear fechas inicialmente
-        df = pd.read_csv(processed_data_path)
+        # 1. Cargar datos
+        # IMPORTANTE: Forzamos 'id' a string para evitar problemas de precisión o notación científica
+        # low_memory=False ayuda si el archivo crece mucho
+        df = pd.read_csv(processed_data_path, dtype={'id': str}, low_memory=False)
 
-        # Convertir a datetime de forma robusta, forzando errores a NaT (Not a Time) y estableciendo UTC
-        df['created_at'] = pd.to_datetime(df['created_at'], errors='coerce', utc=True)
+        # 2. Conversión de fechas ROBUSTA (El arreglo del bug)
+        # format='mixed' permite que convivan fechas estilo "2025-11-27 20:00:00" (Histórico)
+        # con fechas estilo "2025-12-03T15:00:00" (API nueva) sin generar NaT.
+        df['created_at'] = pd.to_datetime(df['created_at'], errors='coerce', utc=True, format='mixed')
 
-        # Eliminar filas donde la fecha no se pudo convertir (si las hay)
+        # 3. Limpieza
         rows_before = len(df)
         df.dropna(subset=['created_at'], inplace=True)
         rows_after = len(df)
         
         if rows_before > rows_after:
+            # Si esto ocurre ahora, realmente son datos corruptos, no un error de formato
             logger.warning(f"Se eliminaron {rows_before - rows_after} filas por tener fechas inválidas.")
 
         if df.empty:
             logger.error("El DataFrame está vacío después de procesar las fechas.")
             return pd.DataFrame()
+
+        # 4. Asegurar ordenamiento (buena práctica para series temporales)
+        df = df.sort_values('created_at').reset_index(drop=True)
 
         logger.success(f"Successfully loaded and processed {len(df)} tweets from pre-processed file.")
         logger.info(f"Data range: {df['created_at'].min().date()} to {df['created_at'].max().date()}")
@@ -56,5 +64,5 @@ if __name__ == '__main__':
     df_test = load_unified_data()
     if not df_test.empty:
         print("Test load successful.")
-        print(df_test.head())
+        print(df_test.tail())  # Imprimimos el final para ver si llegan los datos de Diciembre
         print(df_test.info())

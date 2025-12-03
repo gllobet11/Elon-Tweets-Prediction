@@ -7,6 +7,7 @@ import re
 import os
 import json
 from loguru import logger
+import pandas as pd # Import pandas here to resolve NameError
 
 class PolymarketFeed:
     def __init__(self, host="https://clob.polymarket.com", chain_id=137):
@@ -91,7 +92,6 @@ class PolymarketFeed:
         
         return bins_dict
 
-    @lru_cache(maxsize=512)
     def get_market_valuation(self, yes_token_id: str, no_token_id: str, entry_price_fallback=0.0) -> dict:
         if not self.valid: return {'mid_price': entry_price_fallback, 'status': 'CLIENT_ERR'}
 
@@ -137,3 +137,52 @@ class PolymarketFeed:
             next_cursor = markets_resp.get('next_cursor')
             if not next_cursor or next_cursor == "LTE=": break
         return None
+
+    def get_market_dates(self, market_description: str) -> tuple[pd.Timestamp, pd.Timestamp] | tuple[None, None]:
+        """
+        Parses the market start and end dates from the description text robustly.
+        Handles cases where the market spans across the end of a year.
+        """
+        logger.debug(f"Attempting to parse dates from description: '{market_description}'")
+        if not market_description:
+            return None, None
+
+        match = re.search(r'from (.*? ET) to (.*? ET)', market_description)
+        if not match:
+            logger.error("Could not extract date strings using regex from description.")
+            return None, None
+            
+        start_date_str, end_date_str = match.groups()
+        
+        # Clean the strings
+        start_clean = start_date_str.replace(" ET", "").strip()
+        end_clean = end_date_str.replace(" ET", "").strip()
+        
+        try:
+            # Check for year in end date string to use as a reference
+            end_year_match = re.search(r'(\d{4})', end_clean)
+            ref_year = int(end_year_match.group(1)) if end_year_match else datetime.now().year
+
+            # If start date is missing a year, add the reference year
+            if not re.search(r'(\d{4})', start_clean):
+                start_clean = f"{start_clean}, {ref_year}"
+
+            # Parse dates now that they should both have years
+            end_dt = pd.to_datetime(end_clean)
+            start_dt = pd.to_datetime(start_clean)
+
+            # If start date is after end date, it must be from the previous year
+            if start_dt > end_dt:
+                start_dt = start_dt.replace(year=start_dt.year - 1)
+
+            # Localize to ET and then convert to UTC
+            tz = 'America/New_York'
+            market_start_date = start_dt.tz_localize(tz).tz_convert('UTC')
+            market_end_date = end_dt.tz_localize(tz).tz_convert('UTC')
+            
+            logger.info(f"Parsed market dates: START={market_start_date}, END={market_end_date}")
+            return market_start_date, market_end_date
+
+        except Exception as e:
+            logger.error(f"Error parsing market dates: {e}")
+            return None, None

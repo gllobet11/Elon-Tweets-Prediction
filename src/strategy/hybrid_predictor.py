@@ -28,6 +28,7 @@ def get_hybrid_prediction(prophet_model, market_start_date, market_end_date, df_
     # 2. Contar tweets reales con precisión
     actuals_mask = (df_tweets['created_at'] >= market_start_date) & (df_tweets['created_at'] < now_utc)
     sum_of_actuals = len(df_tweets[actuals_mask])
+    
     logger.info(f" -> Suma de tweets reales (exactos): {sum_of_actuals}")
 
     # 3. Calcular el tiempo restante a predecir

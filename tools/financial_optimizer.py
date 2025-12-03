@@ -1,21 +1,21 @@
 """
 financial_optimizer.py
 
-Este script es el corazromUtf8bfn de la estrategia de optimizaciromUtf83n financiera.
-Realiza un backtest walk-forward utilizando el mejor modelo de Prophet
-(previamente seleccionado por `models_evals.py`) para simular la trayectoria
-de un capital.
+This script is the core of the financial optimization strategy.
+It performs a walk-forward backtest using the best Prophet model
+(previously selected by `models_evals.py`) to simulate the trajectory
+of a capital account.
 
-El objetivo principal es encontrar la combinaciromUtf83n romUtf83ptima de dos hiperparromUtf83metros:
-1. `alpha` (parromUtf83metro de dispersiromUtf83n para la distribuciromUtf83n Negative Binomial).
-2. `kelly_fraction` (fracciromUtf83n del Criterio de Kelly para el tamaromUtf83o de la apuesta).
+The main objective is to find the optimal combination of two hyperparameters:
+1. `alpha` (dispersion parameter for the Negative Binomial distribution).
+2. `kelly_fraction` (fraction of the Kelly Criterion for bet sizing).
 
-Estos parromUtf83metros se optimizan para maximizar el "Calmar Ratio" (Retorno / MromUtf83ximo Drawdown),
-una mromUtf83trica clave de rendimiento ajustado al riesgo. Los parromUtf83metros romUtf83ptimos se guardan
-para ser utilizados en el dashboard de producciromUtf83n (`main.py`).
+These parameters are optimized to maximize the "Calmar Ratio" (Return / Maximum Drawdown),
+a key risk-adjusted performance metric. The optimal parameters are saved
+for use in the production dashboard (`main.py`).
 
-El script tambiromUtf83n genera visualizaciones (heatmaps y curva de equidad) para
-entender el rendimiento a travromUtf83s de diferentes combinaciones de parromUtf83metros.
+The script also generates visualizations (heatmaps and equity curve) to
+understand performance across different parameter combinations.
 """
 
 import numpy as np
@@ -40,24 +40,24 @@ try:
     from src.ingestion.unified_feed import load_unified_data
     from src.processing.feature_eng import FeatureEngineer
 except (ImportError, ModuleNotFoundError) as e:
-    logger.error(f"Error de importaciromUtf83n en financial_optimizer.py: {e}")
+    logger.error(f"Import error in financial_optimizer.py: {e}")
     sys.exit(1)
 
-# --- CONFIGURACIromUtf83N ---
+# --- CONFIGURATION ---
 INITIAL_CAPITAL = 1000.0
 BINS = [(v['lower'], v['upper']) for k, v in MARKET_BINS.items()]
 WEEKS_TO_VALIDATE = 12
 
 def get_last_complete_friday(last_data_date: pd.Timestamp) -> datetime:
     """
-    Encuentra el romUtf83ltimo viernes completo que puede iniciar una ventana de pronromUtf83stico de 7 dromUtf83as,
-    asegurando que se disponga de datos de verdad fundamental.
+    Finds the last complete Friday that can start a 7-day forecast window,
+    ensuring ground truth data is available.
 
     Args:
-        last_data_date (pd.Timestamp): La fecha del romUtf83ltimo punto de datos disponible.
+        last_data_date (pd.Timestamp): The date of the last available data point.
 
     Returns:
-        datetime: Un objeto datetime que representa el romUtf83ltimo viernes completo.
+        datetime: A datetime object representing the last complete Friday.
     """
     if isinstance(last_data_date, pd.Timestamp):
         last_data_date = last_data_date.to_pydatetime()
@@ -71,31 +71,31 @@ def get_last_complete_friday(last_data_date: pd.Timestamp) -> datetime:
 
 def generate_backtest_predictions(weeks_to_validate: int) -> pd.DataFrame:
     """
-    Genera predicciones de backtest utilizando la configuraciromUtf83n del MEJOR modelo
-    encontrado por `models_evals.py`.
+    Generates backtest predictions using the configuration of the BEST model
+    found by `models_evals.py`.
     """
-    logger.info("⚙️  Generando predicciones de backtest para optimizaciromUtf83n financiera...")
+    logger.info("⚙️  Generating backtest predictions for financial optimization...")
     
     try:
         model_files = glob.glob('best_prophet_model_*.pkl')
         if not model_files:
-            raise FileNotFoundError("No se encontrromUtf83 ninguna archivo de modelo .pkl. Ejecuta `tools/models_evals.py` primero.")
+            raise FileNotFoundError("No .pkl model file found. Run `tools/models_evals.py` first.")
         
         latest_model_path = max(model_files, key=os.path.getmtime)
         with open(latest_model_path, 'rb') as f:
             model_data = pickle.load(f)
         
         regressors = model_data.get('regressors', [])
-        model_name = model_data.get('model_name', 'Desconocido')
-        logger.info(f"   -> Usando configuraciromUtf83n del modelo '{model_name}' desde '{os.path.basename(latest_model_path)}'")
+        model_name = model_data.get('model_name', 'Unknown')
+        logger.info(f"   -> Using configuration for model '{model_name}' from '{os.path.basename(latest_model_path)}'")
         if regressors:
-            logger.info(f"   -> Regresores: {regressors}")
+            logger.info(f"   -> Regressors: {regressors}")
         else:
-            logger.info("   -> Modelo sin regresores (baseline).")
+            logger.info("   -> Model without regressors (baseline).")
             
     except Exception as e:
-        logger.error(f"   ❌ Error al cargar el modelo: {e}")
-        logger.warning("   -> Usando configuraciromUtf83n de regresores por defecto como fallback.")
+        logger.error(f"   ❌ Error loading model: {e}")
+        logger.warning("   -> Using default regressor configuration as fallback.")
         regressors = ['lag_1', 'last_burst', 'roll_sum_7', 'momentum']
 
     df_tweets = load_unified_data()
@@ -103,7 +103,7 @@ def generate_backtest_predictions(weeks_to_validate: int) -> pd.DataFrame:
     
     for col in regressors:
         if col not in all_features.columns:
-            logger.warning(f"   ⚠️ La columna del regresor '{col}' no se encontrromUtf83 en los datos. Se rellenarromUtf83 con 0.")
+            logger.warning(f"   ⚠️ Regressor column '{col}' not found in data. Filling with 0.")
             if 'momentum' in col and 'momentum' not in all_features.columns:
                  roll_3 = all_features['n_tweets'].rolling(3).mean().shift(1)
                  roll_7 = all_features['n_tweets'].rolling(7).mean().shift(1)
@@ -123,7 +123,7 @@ def generate_backtest_predictions(weeks_to_validate: int) -> pd.DataFrame:
         prophet_df[regressors] = prophet_df[regressors].fillna(0)
     
     predictions = []
-    logger.info(f"   -> Validando {len(validation_fridays)} semanas desde {validation_fridays[0].date()} hasta {validation_fridays[-1].date()}")
+    logger.info(f"   -> Validating {len(validation_fridays)} weeks from {validation_fridays[0].date()} to {validation_fridays[-1].date()}")
 
     for friday_date in validation_fridays:
         week_start, week_end = friday_date, friday_date + timedelta(days=6)
@@ -148,7 +148,7 @@ def generate_backtest_predictions(weeks_to_validate: int) -> pd.DataFrame:
         predictions.append(result_week)
 
     if not predictions:
-        raise ValueError("No se pudieron generar predicciones de backtest.")
+        raise ValueError("Could not generate backtest predictions.")
         
     df_pred = pd.concat(predictions)
     df_weekly = df_pred.groupby(pd.Grouper(key='ds', freq='W-FRI')).agg(
@@ -156,13 +156,13 @@ def generate_backtest_predictions(weeks_to_validate: int) -> pd.DataFrame:
         y_pred=('yhat', 'sum')
     ).dropna()
     
-    logger.success(f"✅ Predicciones de backtest generadas para {len(df_weekly)} semanas.")
+    logger.success(f"✅ Backtest predictions generated for {len(df_weekly)} weeks.")
     return df_weekly
 
 
 def get_market_prices_simulation(mu_market: float) -> np.ndarray:
     """
-    Simula precios de mercado.
+    Simulates market prices.
     """
     probs = []
     for l, h in BINS:
@@ -174,7 +174,7 @@ def get_market_prices_simulation(mu_market: float) -> np.ndarray:
 
 def simulate_trading_run(df: pd.DataFrame, alpha_nb: float, kelly_fraction: float) -> tuple[pd.Series, float]:
     """
-    Simula una trayectoria de trading completa.
+    Simulates a full trading run.
     """
     capital = INITIAL_CAPITAL
     equity_curve = [capital]
@@ -235,9 +235,9 @@ def simulate_trading_run(df: pd.DataFrame, alpha_nb: float, kelly_fraction: floa
 
 def optimize_risk_params(df_backtest: pd.DataFrame) -> tuple[float, float]:
     """
-    Optimiza los parromUtf83metros de riesgo (alpha y kelly_fraction).
+    Optimizes risk parameters (alpha and kelly_fraction).
     """
-    logger.info(f"⚡ Optimizando sobre {len(df_backtest)} semanas...")
+    logger.info(f"⚡ Optimizing over {len(df_backtest)} weeks...")
     
     alphas = [0.001, 0.005, 0.01, 0.03, 0.05, 0.1]
     kellys = [0.1, 0.2, 0.3, 0.4, 0.5]
@@ -269,7 +269,7 @@ def optimize_risk_params(df_backtest: pd.DataFrame) -> tuple[float, float]:
             
     df_res = pd.DataFrame(results)
     
-    # --- Visualizaciones ---
+    # --- Visualizations ---
     plt.figure(figsize=(8, 5))
     ax = sns.heatmap(df_res.pivot(index='alpha', columns='kelly', values='score'), annot=True, fmt=".2f", cmap="RdYlGn")
     ax.set_title("Calmar Ratio (Score)")
@@ -292,7 +292,7 @@ def optimize_risk_params(df_backtest: pd.DataFrame) -> tuple[float, float]:
     plt.show()
     
     best = df_res.loc[df_res['score'].idxmax()]
-    logger.info("\n🏆 CONFIGURACIromUtf83N GANADORA (Max Calmar Ratio):")
+    logger.info("\n🏆 WINNING CONFIGURATION (Max Calmar Ratio):")
     logger.info(f"   Alpha (NB): {best['alpha']}")
     logger.info(f"   Kelly Mul : {best['kelly']}")
     logger.info(f"   Calmar    : {best['score']:.2f}")
@@ -308,19 +308,19 @@ if __name__ == "__main__":
     
     with open('risk_params.pkl', 'wb') as f:
         pickle.dump({'alpha': optimal_alpha, 'kelly': optimal_kelly}, f)
-    logger.info(f"\n💾 ParromUtf83metros de riesgo romUtf83ptimos guardados en 'risk_params.pkl'")
+    logger.info(f"\n💾 Optimal risk parameters saved to 'risk_params.pkl'")
     
-    logger.info("\n--- SimulaciromUtf83n Final con ParromUtf83metros romUtf83ptimos ---")
+    logger.info("\n--- Final Simulation with Optimal Parameters ---")
     best_equity, best_mdd = simulate_trading_run(df_backtest_real, optimal_alpha, optimal_kelly)
     
     final_capital = best_equity.iloc[-1]
     final_pnl = final_capital - INITIAL_CAPITAL
     final_roi = final_pnl / INITIAL_CAPITAL
 
-    logger.info(f"Capital Inicial: ${INITIAL_CAPITAL:.2f}")
-    logger.info(f"Capital Final  : ${final_capital:.2f}")
-    logger.info(f"PnL Final      : ${final_pnl:.2f}")
-    logger.info(f"ROI Final      : {final_roi:.2%}")
+    logger.info(f"Initial Capital: ${INITIAL_CAPITAL:.2f}")
+    logger.info(f"Final Capital  : ${final_capital:.2f}")
+    logger.info(f"Final PnL      : ${final_pnl:.2f}")
+    logger.info(f"Final ROI      : {final_roi:.2%}")
     logger.info(f"Max Drawdown   : {best_mdd:.2%}")
 
     start_date = df_backtest_real.index.min() - pd.DateOffset(weeks=1)
@@ -332,9 +332,9 @@ if __name__ == "__main__":
         label=f'Alpha={optimal_alpha}, Kelly={optimal_kelly}\nFinal ROI: {final_roi:.2%}', 
         drawstyle="steps-post"
     )
-    plt.title(f"Curva de Equidad romUtf83ptima (Max Drawdown: {best_mdd*100:.1f}%)")
+    plt.title(f"Optimal Equity Curve (Max Drawdown: {best_mdd*100:.1f}%)")
     plt.ylabel("Capital ($)")
-    plt.xlabel("Semanas del Backtest")
+    plt.xlabel("Backtest Weeks")
     plt.grid(True, which='major', linestyle='--')
     plt.legend()
     plt.tight_layout()
