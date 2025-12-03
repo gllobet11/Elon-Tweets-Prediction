@@ -25,6 +25,8 @@ except (ImportError, ModuleNotFoundError) as e:
     sys.exit(1)
 
 # --- CONFIGURATION ---
+RANDOM_STATE = 42
+np.random.seed(RANDOM_STATE) # Set numpy seed for reproducibility
 INITIAL_CAPITAL = 1000.0
 BINS = [(v["lower"], v["upper"]) for k, v in MARKET_BINS.items()]
 
@@ -58,6 +60,7 @@ def simulate_trading_run(
     equity_curve = [capital]
     peak = capital
     max_drawdown = 0
+    ev_values = [] # Initialize list to store EV values of placed bets
 
     for _, row in df.iterrows():
         mu_mypred = row["y_pred"]
@@ -94,6 +97,10 @@ def simulate_trading_run(
             if b <= 0:
                 continue
 
+            # Calculate Expected Value (EV) for the selected bet
+            ev_bet = my_prob * b - (1 - my_prob) * 1 # EV = p*b - q*1 (where q is probability of losing)
+            ev_values.append(ev_bet)
+
             f_star = (my_prob * (b + 1) - 1) / b
             bet_size = max(0, f_star) * kelly_fraction
             bet_size = min(bet_size, 0.20)
@@ -110,9 +117,9 @@ def simulate_trading_run(
         max_drawdown = max(max_drawdown, dd)
 
         if capital < 50:
-            return pd.Series(equity_curve), 1.0
+            return pd.Series(equity_curve), 1.0, np.mean(ev_values) if ev_values else 0.0 # Return average EV even on early exit
 
-    return pd.Series(equity_curve), max_drawdown
+    return pd.Series(equity_curve), max_drawdown, np.mean(ev_values) if ev_values else 0.0 # Return average EV
 
 
 def optimize_risk_params(
@@ -128,7 +135,7 @@ def optimize_risk_params(
 
     for a in alphas:
         for k in kellys:
-            equity_curve, max_drawdown = simulate_trading_run(df_backtest, a, k)
+            equity_curve, max_drawdown, avg_ev = simulate_trading_run(df_backtest, a, k)
 
             final_capital = equity_curve.iloc[-1]
             pnl = final_capital - INITIAL_CAPITAL
@@ -142,18 +149,19 @@ def optimize_risk_params(
                 calmar_ratio = roi / max_drawdown
 
             results.append(
-                {"alpha": a, "kelly": k, "score": calmar_ratio, "pnl": pnl, "roi": roi},
+                {"alpha": a, "kelly": k, "score": calmar_ratio, "pnl": pnl, "roi": roi, "avg_ev": avg_ev},
             )
 
     df_res = pd.DataFrame(results)
 
-    best = df_res.loc[df_res["score"].idxmax()]
+    best = df_res.sort_values(by=["score", "alpha", "kelly"], ascending=[False, True, True]).iloc[0]
     logger.info("\n🏆 WINNING CONFIGURATION (Max Calmar Ratio):")
     logger.info(f"   Alpha (NB): {best['alpha']}")
     logger.info(f"   Kelly Mul : {best['kelly']}")
     logger.info(f"   Calmar    : {best['score']:.2f}")
     logger.info(f"   PnL ($)   : ${best['pnl']:.2f}")
     logger.info(f"   ROI       : {best['roi']:.2%}")
+    logger.info(f"   Avg EV    : {best['avg_ev']:.4f}")
 
     return best["alpha"], best["kelly"], df_res
 
@@ -191,7 +199,7 @@ if __name__ == "__main__":
     logger.info("\n💾 Optimal risk parameters saved to 'risk_params.pkl'")
 
     logger.info("\n--- Final Simulation with Optimal Parameters ---")
-    best_equity, best_mdd = simulate_trading_run(
+    best_equity, best_mdd, best_avg_ev = simulate_trading_run(
         df_backtest_real, optimal_alpha, optimal_kelly,
     )
 
@@ -204,6 +212,7 @@ if __name__ == "__main__":
     logger.info(f"Final PnL      : ${final_pnl:.2f}")
     logger.info(f"Final ROI      : {final_roi:.2%}")
     logger.info(f"Max Drawdown   : {best_mdd:.2%}")
+    logger.info(f"Avg EV (final) : {best_avg_ev:.4f}")
 
     # Plotting section
     plt.figure(figsize=(8, 5))

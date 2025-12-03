@@ -197,14 +197,14 @@ class ProphetInferenceModel:
 
     def predict_single_step(
         self, target_date: pd.Timestamp, all_processed_features_df: pd.DataFrame,
-    ):
+    ) -> tuple[float, float, float]: # Return yhat, yhat_lower, yhat_upper
         """
         Predice 'y' para una única fecha objetivo (target_date) utilizando el modelo Prophet entrenado.
         Las características para target_date se extraen de all_processed_features_df.
         Este método es para la validación walk-forward, donde las features del día a predecir son conocidas.
         :param target_date: Fecha para la que se quiere predecir.
         :param all_processed_features_df: DataFrame con todas las features procesadas, incluyendo la fila para target_date.
-        :return: Predicción de 'y' para target_date.
+        :return: Predicción de 'y' para target_date, yhat_lower, yhat_upper.
         """
         if self.model is None:
             raise ValueError(
@@ -241,7 +241,9 @@ class ProphetInferenceModel:
         # 4. Predecir
         forecast = self.model.predict(future_df)
         pred_y = max(0, forecast["yhat"].values[0])  # Asegurar no negativos
-        return pred_y
+        pred_y_lower = forecast["yhat_lower"].values[0]
+        pred_y_upper = forecast["yhat_upper"].values[0]
+        return pred_y, pred_y_lower, pred_y_upper
 
     def predict_next_week_recursively(
         self,

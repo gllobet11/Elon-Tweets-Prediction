@@ -41,7 +41,7 @@ def load_params(filepath):
         return {"alpha": data.get("alpha"), "kelly": data.get("kelly")}
 
 
-def main():
+def test_determinism_of_financial_optimizer():
     """
     Runs the determinism test by comparing the core parameters ('alpha', 'kelly')
     from two consecutive runs of the optimizer script.
@@ -107,4 +107,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    test_determinism_of_financial_optimizer()

@@ -1,13 +1,13 @@
 """
 dashboard_chart_generator.py
 
-Este módulo se encarga exclusivamente de la generación de objetos de gráficos
-utilizando la librería Altair. Su propósito es centralizar toda la lógica
-de visualización, manteniendo la interfaz de usuario de Streamlit limpia
-y enfocada en la presentación.
+This module handles the generation of Altair chart objects.
+It centralizes visualization logic to keep the Streamlit UI clean.
 
-Proporciona funciones para generar gráficos estadísticos de la actividad
-de tweets y gráficos de comparación de probabilidades del modelo frente al mercado.
+Improvements:
+- Interactive tooltips.
+- Color-coded "Edge" visualization for decision making.
+- Optimized bar sizing for historical views.
 """
 
 import altair as alt
@@ -16,149 +16,168 @@ import pandas as pd
 
 class DashboardChartGenerator:
     """
-    Clase para generar los objetos de gráficos de Altair para el dashboard.
+    Generates Altair chart objects for the dashboard.
     """
 
     def __init__(self):
-        """
-        Inicializa el generador de gráficos.
-        """
+        # Define a consistent color palette
+        self.color_market = "#ff7f0e"  # Orange
+        self.color_model = "#1f77b4"   # Blue
+        self.color_edge_pos = "#2ca02c" # Green
+        self.color_edge_neg = "#d62728" # Red
+        self.color_bar_neutral = "#aec7e8" # Light Blue
 
     def generate_statistical_charts(
-        self, daily_data: pd.Series, data_last_6_months: pd.DataFrame,
+        self, daily_data: pd.Series, data_last_6_months: pd.DataFrame
     ) -> tuple[alt.Chart, alt.Chart]:
         """
-        Genera gráficos de Altair para el análisis estadístico de la actividad de tweets.
-
-        Args:
-            daily_data (pd.Series): Serie de conteos diarios de tweets (para contexto).
-            data_last_6_months (pd.DataFrame): DataFrame con datos de tweets de los últimos 6 meses.
-
-        Returns:
-            tuple[alt.Chart, alt.Chart]: Una tupla que contiene los gráficos de Altair:
-                - chart_dow (alt.Chart): Gráfico de barras de la media de tweets por día de la semana.
-                - chart_dist (alt.Chart): Gráfico de barras de la distribución de tweets semanales.
+        Generates statistical charts for tweet activity.
+        1. Day of Week Average.
+        2. Weekly Sum Distribution.
         """
+        # --- Chart 1: Day of Week Analysis ---
+        data_last_6_months = data_last_6_months.copy()
         data_last_6_months["day_of_week"] = data_last_6_months.index.day_name()
+        
         avg_by_day = (
             data_last_6_months.groupby("day_of_week")["n_tweets"].mean().reset_index()
         )
+        
         day_order = [
-            "Monday",
-            "Tuesday",
-            "Wednesday",
-            "Thursday",
-            "Friday",
-            "Saturday",
-            "Sunday",
+            "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"
         ]
-        avg_by_day["day_of_week"] = pd.Categorical(
-            avg_by_day["day_of_week"], categories=day_order, ordered=True,
-        )
-
+        
+        # Sort logic
+        avg_by_day["day_sort"] = avg_by_day["day_of_week"].apply(lambda x: day_order.index(x))
+        
         chart_dow = (
-            alt.Chart(avg_by_day.sort_values("day_of_week"))
-            .mark_bar()
+            alt.Chart(avg_by_day)
+            .mark_bar(color=self.color_model, opacity=0.8)
             .encode(
-                x=alt.X("day_of_week", sort=None, title="Día de la Semana"),
-                y=alt.Y("n_tweets", title="Media de Tweets"),
+                x=alt.X("day_of_week", sort=day_order, title=None),
+                y=alt.Y("n_tweets", title="Avg Tweets"),
+                tooltip=[
+                    alt.Tooltip("day_of_week", title="Day"),
+                    alt.Tooltip("n_tweets", title="Avg Tweets", format=".1f")
+                ]
             )
-            .properties(title="Media de Tweets por Día (Últimos 6 meses)", height=300)
+            .properties(title="Average Tweets by Day (Last 6 Months)", height=250)
         )
 
+        # --- Chart 2: Weekly Distribution Histogram ---
         weekly_sums = (
             data_last_6_months.resample("W-MON")["n_tweets"].sum().reset_index()
         )
+        
         chart_dist = (
             alt.Chart(weekly_sums)
-            .mark_bar()
+            .mark_bar(color=self.color_bar_neutral)
             .encode(
-                alt.X(
+                x=alt.X(
                     "n_tweets",
                     bin=alt.Bin(maxbins=20),
-                    title="Total de Tweets Semanales",
+                    title="Weekly Tweet Count"
                 ),
-                alt.Y("count()", title="Frecuencia (Nº de Semanas)"),
+                y=alt.Y("count()", title="Frequency (Weeks)"),
+                tooltip=[
+                    alt.Tooltip("n_tweets", bin=True, title="Range"),
+                    alt.Tooltip("count()", title="Weeks Count")
+                ]
             )
             .properties(
-                title="Distribución de Tweets Semanales (Últimos 6 meses)", height=300,
+                title="Weekly Tweet Count Distribution (Last 6 Months)", height=250
             )
         )
 
         return chart_dow, chart_dist
 
     def generate_probability_comparison_chart(
-        self, df_opportunities: pd.DataFrame,
+        self, df_opportunities: pd.DataFrame
     ) -> alt.Chart:
         """
-        Genera un gráfico de Altair en capas que compara las probabilidades del modelo
-        con los precios de mercado para cada bin.
-
-        Args:
-            df_opportunities (pd.DataFrame): DataFrame con las oportunidades de trading,
-                                            incluyendo precios de mercado y probabilidades del modelo por bin.
-
-        Returns:
-            alt.Chart: Objeto de gráfico de Altair con la comparación de probabilidades.
+        Generates a layered chart comparing Model vs Market probabilities.
+        
+        IMPROVEMENT: Colors the Model points based on 'Edge' magnitude.
+        Green = Positive Edge (Buy), Red/Gray = Negative Edge.
         """
 
-        # 1. Añadir puntos medios numéricos a los datos para el eje X
+        # Helper to parse bin midpoints for plotting
         def get_midpoint(bin_label: str) -> float:
-            """Calcula el punto medio de una etiqueta de bin."""
-            if "+" in bin_label:
-                return (
-                    int(bin_label.replace("+", "").replace(",", "")) + 20
-                )  # Offset para bins abiertos
-            parts = bin_label.replace(",", "").split("-")
-            return (int(parts[0]) + int(parts[1])) / 2
+            if "+" in str(bin_label):
+                # Handle "320+" cases
+                clean = str(bin_label).replace("+", "").replace(",", "")
+                return int(clean) + 20 
+            parts = str(bin_label).replace(",", "").split("-")
+            try:
+                return (int(parts[0]) + int(parts[1])) / 2
+            except:
+                return 0
 
+        df_opportunities = df_opportunities.copy()
         df_opportunities["Midpoint"] = df_opportunities["Bin"].apply(get_midpoint)
+        
+        # Calculate Edge for color coding if not present, though logic_processor usually provides it
+        if "Edge" not in df_opportunities.columns:
+            df_opportunities["Edge"] = df_opportunities["My Model"] - df_opportunities["Mkt Price"]
 
-        # 2. Crear las capas del gráfico
-        # Capa base para compartir ejes
         base = alt.Chart(df_opportunities).encode(
             x=alt.X(
-                "Midpoint:Q", title="Número de Tweets", axis=alt.Axis(labelAngle=-45),
-            ),
-        )
-
-        # Capa 1: Precios de Mercado (Barras)
-        market_bars = (
-            base.mark_bar(
-                width=20,  # Ancho fijo para las barras
-                opacity=0.7,
-                color="#ff7f0e",  # Naranja para el mercado
-            )
-            .encode(
-                y=alt.Y("Mkt Price:Q", title="Probabilidad", axis=alt.Axis(format="%")),
-                tooltip=[
-                    alt.Tooltip("Bin", title="Bin"),
-                    alt.Tooltip("Mkt Price", title="Mkt. Price", format=".3%"),
-                ],
-            )
-            .properties(
-                width=600,  # Ancho ajustado
+                "Midpoint:Q", 
+                title="Number of Tweets", 
+                axis=alt.Axis(labelAngle=0) # Easier to read horizontal
             )
         )
 
-        # Capa 2: Probabilidad del Modelo (Línea + Puntos)
+        # Layer 1: Market Prices (Orange Bars)
+        market_bars = base.mark_bar(
+            width=25,
+            opacity=0.3,
+            color=self.color_market,
+            cornerRadiusTopLeft=3,
+            cornerRadiusTopRight=3
+        ).encode(
+            y=alt.Y("Mkt Price:Q", title="Probability", axis=alt.Axis(format="%")),
+            tooltip=[
+                alt.Tooltip("Bin", title="Bin Range"),
+                alt.Tooltip("Mkt Price", title="Market Prob", format=".1%"),
+            ]
+        )
+
+        # Layer 2: Model Line (Connecting the dots)
         model_line = base.mark_line(
-            color="#1f77b4",  # Azul para el modelo
-        ).encode(y=alt.Y("My Model:Q", title="Probabilidad"))
+            color=self.color_model,
+            strokeDash=[5, 5], # Dashed line to differentiate from bars
+            opacity=0.6
+        ).encode(
+            y=alt.Y("My Model:Q")
+        )
 
-        model_points = base.mark_point(color="#1f77b4", filled=True, size=60).encode(
+        # Layer 3: Model Points (Colored by Edge)
+        # We create a specific color scale for the edge
+        model_points = base.mark_circle(
+            size=100,
+            opacity=1.0
+        ).encode(
             y=alt.Y("My Model:Q"),
+            color=alt.condition(
+                alt.datum.Edge > 0,
+                alt.value(self.color_edge_pos),  # Green if Edge > 0
+                alt.value(self.color_edge_neg)   # Red if Edge <= 0
+            ),
             tooltip=[
                 alt.Tooltip("Bin", title="Bin"),
-                alt.Tooltip("My Model", title="Model Prob.", format=".3%"),
-            ],
+                alt.Tooltip("My Model", title="My Prob", format=".1%"),
+                alt.Tooltip("Mkt Price", title="Mkt Prob", format=".1%"),
+                alt.Tooltip("Edge", title="Edge", format=".1%"),
+                alt.Tooltip("Bet Size ($)", title="Kelly Bet", format="$.2f")
+            ]
         )
 
-        # 3. Combinar y renderizar el gráfico
         final_chart = (
             (market_bars + model_line + model_points)
             .properties(
-                title="Comparación de Probabilidades: Modelo (Línea) vs. Mercado (Barras)",
+                title="Probability Analysis: Green points indicate a positive Edge (Buy Signal)",
+                height=400
             )
             .interactive()
         )
@@ -166,38 +185,51 @@ class DashboardChartGenerator:
         return final_chart
 
     def generate_historical_week_chart(
-        self, daily_data_for_week: pd.DataFrame,
+        self, daily_data_for_week: pd.DataFrame
     ) -> alt.Chart:
         """
-        Generates a bar chart for the daily tweet activity of a selected historical week.
-
-        Args:
-            daily_data_for_week (pd.DataFrame): DataFrame containing daily tweet counts for the week.
-
-        Returns:
-            alt.Chart: An Altair bar chart object.
+        Generates a bar chart for daily activity of a historical week.
+        
+        IMPROVEMENT: Uses Ordinal dates to fix 'thin bar' issues and adds a mean line.
         """
-        # Ensure the DataFrame is not empty and has the expected column
         if daily_data_for_week.empty or "n_tweets" not in daily_data_for_week.columns:
             return alt.Chart(pd.DataFrame()).mark_text(text="No data to display.")
 
-        # Prepare data for Altair
-        data_to_plot = daily_data_for_week.reset_index().rename(
-            columns={"index": "date"},
+        data_to_plot = daily_data_for_week.reset_index().rename(columns={"index": "date"})
+        # Create a formatted string for the axis to ensure discrete bars
+        data_to_plot["date_str"] = data_to_plot["date"].dt.strftime("%Y-%m-%d (%a)")
+        
+        # Calculate mean for the rule line
+        mean_val = data_to_plot["n_tweets"].mean()
+        
+        # Base Chart
+        base = alt.Chart(data_to_plot).encode(
+            x=alt.X("date_str:O", title="Date", axis=alt.Axis(labelAngle=-45))
         )
 
-        chart = (
-            alt.Chart(data_to_plot)
-            .mark_bar()
-            .encode(
-                x=alt.X("date:T", axis=alt.Axis(title="Date", format="%Y-%m-%d")),
-                y=alt.Y("n_tweets:Q", axis=alt.Axis(title="Number of Tweets")),
-                tooltip=[
-                    alt.Tooltip("date:T", title="Date"),
-                    alt.Tooltip("n_tweets:Q", title="Tweets"),
-                ],
-            )
-            .properties(title="Daily Tweet Activity for Selected Week", height=300)
+        # Layer 1: Bars
+        bars = base.mark_bar(color=self.color_model).encode(
+            y=alt.Y("n_tweets:Q", title="Tweets"),
+            tooltip=[
+                alt.Tooltip("date_str", title="Date"),
+                alt.Tooltip("n_tweets", title="Count")
+            ]
         )
 
-        return chart
+        # Layer 2: Text labels on bars
+        text = base.mark_text(dy=-10).encode(
+            y=alt.Y("n_tweets:Q"),
+            text=alt.Text("n_tweets:Q")
+        )
+
+        # Layer 3: Average Rule
+        rule = alt.Chart(pd.DataFrame({'mean': [mean_val]})).mark_rule(
+            color='red', strokeDash=[4, 4]
+        ).encode(
+            y='mean:Q'
+        )
+
+        return (bars + text + rule).properties(
+            title=f"Daily Activity vs Weekly Avg ({mean_val:.1f})",
+            height=300
+        )

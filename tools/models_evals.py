@@ -48,7 +48,7 @@ except Exception as e:
     sys.exit(1)
 
 # --- HYPERPARAMETERS ---
-ALPHA_CANDIDATES = [0.01, 0.05, 0.10, 0.15, 0.20]
+ALPHA_CANDIDATES = [0.01] # Tuned optimal alpha
 FINAL_WINNING_FEATURES = [
     "lag_1",
     "roll_sum_7",
@@ -110,13 +110,7 @@ def run_weekly_walk_forward(
             continue
 
         try:
-            m = Prophet(
-                growth="linear",
-                yearly_seasonality=False,
-                weekly_seasonality=True,
-                daily_seasonality=False,
-                changepoint_prior_scale=0.05,
-            )
+            m = Prophet(growth='linear', yearly_seasonality=False, weekly_seasonality=True, daily_seasonality=False, changepoint_prior_scale=0.1, seasonality_prior_scale=0.1)
             for reg in regressors:
                 m.add_regressor(reg)
             m.fit(df_train)
@@ -167,13 +161,7 @@ def train_best_model(all_features_df: pd.DataFrame, best_config: dict) -> dict:
             prophet_df[col] = 0.0
         prophet_df[regressors] = prophet_df[regressors].fillna(0)
 
-    m = Prophet(
-        growth="linear",
-        yearly_seasonality=False,
-        weekly_seasonality=True,
-        daily_seasonality=False,
-        changepoint_prior_scale=0.05,
-    )
+    m = Prophet(growth='linear', yearly_seasonality=False, weekly_seasonality=True, daily_seasonality=False, changepoint_prior_scale=0.1, seasonality_prior_scale=0.1)
     for reg in regressors:
         m.add_regressor(reg)
     m.fit(prophet_df)
@@ -278,29 +266,9 @@ def evaluate_model_cv(
     return best_metric["Avg Log Loss"], best_metric.to_dict()
 
 
-def compare_prophet_feature_sets_weekly(weeks_to_validate: int = WEEKS_TO_VALIDATE):
-    """
-    Realiza una comparación semanal walk-forward de diferentes configuraciones de modelos.
-    """
-    logger.info(
-        f"\n{'=' * 80}\n   VALIDACIÓN DE DISTRIBUCIÓN Y MODELOS (ÚLTIMAS {weeks_to_validate} SEMANAS)   \n{'=' * 80}\n",
-    )
-
-    logger.info("📡 Cargando y procesando datos...")
-    df_tweets = load_unified_data()
-    all_features = FeatureEngineer().process_data(df_tweets)
-
-    if "momentum" not in all_features.columns:
-        logger.warning("   ⚠️ Calculando 'momentum'...")
-        roll_3 = all_features["n_tweets"].rolling(3).mean().shift(1)
-        roll_7 = all_features["n_tweets"].rolling(7).mean().shift(1)
-        all_features["momentum"] = (roll_3 - roll_7).fillna(0)
-
-
 # Global Candidates for Distribution and Bins
-dist_candidates = ["nbinom", "poisson"]
+dist_candidates = ["nbinom"] # Tuned optimal distribution
 bins_config = [(k, v["lower"], v["upper"]) for k, v in MARKET_BINS.items()]
-
 
 def compare_prophet_feature_sets_weekly(weeks_to_validate: int = WEEKS_TO_VALIDATE):
     """

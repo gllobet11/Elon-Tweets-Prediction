@@ -242,7 +242,7 @@ try:
             daily_data_for_selected_week = daily_data[
                 (daily_data.index >= selected_week_dt)
                 & (daily_data.index < selected_week_dt + pd.Timedelta(days=7))
-            ].to_frame()
+            ]
 
             if not daily_data_for_selected_week.empty:
                 historical_chart = chart_generator.generate_historical_week_chart(
