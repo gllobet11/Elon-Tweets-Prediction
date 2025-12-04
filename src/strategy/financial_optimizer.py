@@ -3,6 +3,7 @@ import os
 import pickle
 import sys
 from datetime import datetime
+import json
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -53,16 +54,19 @@ def get_market_prices_simulation(mu_market: float) -> np.ndarray:
 
 def simulate_trading_run(
     df: pd.DataFrame, alpha_nb: float, kelly_fraction: float,
-) -> tuple[pd.Series, float]:
-    """Simulates a full trading trajectory."""
+    week_to_market_map: dict, price_histories: dict
+) -> tuple[pd.Series, float, float, list]:
+    """Simulates a full trading trajectory using real prices where available and logs trades."""
     df = df.copy()
     capital = INITIAL_CAPITAL
     equity_curve = [capital]
     peak = capital
     max_drawdown = 0
-    ev_values = [] # Initialize list to store EV values of placed bets
+    ev_values = []
+    trades = [] # List to log each trade
 
     for _, row in df.iterrows():
+        week_start_str = pd.to_datetime(row['week_start_date']).strftime('%Y-%m-%d')
         mu_mypred = row["y_pred"]
         y_true = row["y_true"]
 
@@ -72,6 +76,7 @@ def simulate_trading_run(
 
         my_probs = []
         winning_bin = -1
+        market_prices = None
 
         for i, (l, h) in enumerate(BINS):
             prob = stats.nbinom.cdf(h, n_param, p_param) - stats.nbinom.cdf(
@@ -80,9 +85,23 @@ def simulate_trading_run(
             my_probs.append(prob)
             if l <= y_true <= h:
                 winning_bin = i
+        
+        winning_bin_range = f"{BINS[winning_bin][0]}-{BINS[winning_bin][1]}" if winning_bin != -1 else "N/A"
 
-        mu_market = row["y_pred"]
-        market_prices = get_market_prices_simulation(mu_market)
+        market_id = week_to_market_map.get(week_start_str)
+        if market_id and market_id in price_histories and price_histories[market_id]:
+            initial_price = price_histories[market_id][0]['p']
+            most_likely_bin_index = np.argmax(my_probs)
+            simulated_prices = get_market_prices_simulation(mu_mypred)
+            if most_likely_bin_index < len(simulated_prices):
+                adjustment_factor = initial_price / simulated_prices[most_likely_bin_index]
+                market_prices = simulated_prices * adjustment_factor
+                market_prices /= market_prices.sum()
+                logger.debug(f"Week {week_start_str}: Using REAL price data (adjusted). Price: {initial_price:.3f}")
+
+        if market_prices is None:
+            market_prices = get_market_prices_simulation(mu_mypred)
+            logger.debug(f"Week {week_start_str}: Using SIMULATED price data.")
 
         edges = np.array(my_probs) - market_prices
         best_idx = np.argmax(edges)
@@ -91,25 +110,34 @@ def simulate_trading_run(
         if edge > 0.05:
             price = market_prices[best_idx]
             my_prob = my_probs[best_idx]
-
             odds = 1.0 / price
             b = odds - 1
-            if b <= 0:
-                continue
 
-            # Calculate Expected Value (EV) for the selected bet
-            ev_bet = my_prob * b - (1 - my_prob) * 1 # EV = p*b - q*1 (where q is probability of losing)
-            ev_values.append(ev_bet)
+            if b > 0:
+                ev_bet = my_prob * b - (1 - my_prob) * 1
+                ev_values.append(ev_bet)
+                f_star = (my_prob * (b + 1) - 1) / b
+                bet_size = max(0, f_star) * kelly_fraction
+                bet_size = min(bet_size, 0.20)
+                wager = capital * bet_size
+                
+                outcome = "Win" if best_idx == winning_bin else "Loss"
+                pnl = wager * b if outcome == "Win" else -wager
 
-            f_star = (my_prob * (b + 1) - 1) / b
-            bet_size = max(0, f_star) * kelly_fraction
-            bet_size = min(bet_size, 0.20)
-            wager = capital * bet_size
+                trade_log = {
+                    "week_start": week_start_str,
+                    "selected_bin": f"{BINS[best_idx][0]}-{BINS[best_idx][1]}",
+                    "actual_bin": winning_bin_range,
+                    "model_prob": my_prob,
+                    "market_price": price,
+                    "edge": edge,
+                    "bet_size_usd": wager,
+                    "outcome": outcome,
+                    "pnl": pnl
+                }
+                trades.append(trade_log)
 
-            if best_idx == winning_bin:
-                capital += wager * b
-            else:
-                capital -= wager
+                capital += pnl
 
         equity_curve.append(capital)
         peak = max(peak, capital)
@@ -117,13 +145,13 @@ def simulate_trading_run(
         max_drawdown = max(max_drawdown, dd)
 
         if capital < 50:
-            return pd.Series(equity_curve), 1.0, np.mean(ev_values) if ev_values else 0.0 # Return average EV even on early exit
+            return pd.Series(equity_curve), 1.0, np.mean(ev_values) if ev_values else 0.0, trades
 
-    return pd.Series(equity_curve), max_drawdown, np.mean(ev_values) if ev_values else 0.0 # Return average EV
+    return pd.Series(equity_curve), max_drawdown, np.mean(ev_values) if ev_values else 0.0, trades
 
 
 def optimize_risk_params(
-    df_backtest: pd.DataFrame,
+    df_backtest: pd.DataFrame, week_to_market_map: dict, price_histories: dict
 ) -> tuple[float, float, pd.DataFrame]:
     """Optimizes risk parameters (alpha and kelly_fraction)."""
     logger.info(f"⚡ Optimizing over {len(df_backtest)} weeks...")
@@ -135,7 +163,7 @@ def optimize_risk_params(
 
     for a in alphas:
         for k in kellys:
-            equity_curve, max_drawdown, avg_ev = simulate_trading_run(df_backtest, a, k)
+            equity_curve, max_drawdown, avg_ev, _ = simulate_trading_run(df_backtest, a, k, week_to_market_map, price_histories)
 
             final_capital = equity_curve.iloc[-1]
             pnl = final_capital - INITIAL_CAPITAL
@@ -167,9 +195,12 @@ def optimize_risk_params(
 
 
 if __name__ == "__main__":
+    # --- Load Data ---
     backtest_data_path = os.path.join(
         project_root, "data", "processed", "historical_performance.csv",
     )
+    week_map_path = os.path.join(project_root, "data", "markets", "week_to_market_id_map.json")
+    price_history_path = os.path.join(project_root, "data", "markets", "all_price_histories.json")
 
     logger.info(
         f"--- Input File Hash (SHA-256): {get_file_hash(backtest_data_path)} ---",
@@ -177,17 +208,42 @@ if __name__ == "__main__":
 
     if not os.path.exists(backtest_data_path):
         logger.error(f"Backtest data not found at '{backtest_data_path}'.")
-        logger.error(
-            "Please run `tools/generate_historical_performance.py` first to create this file.",
-        )
         sys.exit(1)
 
-    logger.info(
-        f"Loading pre-computed backtest data from '{os.path.basename(backtest_data_path)}'...",
-    )
+    logger.info(f"Loading pre-computed backtest data from '{os.path.basename(backtest_data_path)}'...")
     df_backtest_real = pd.read_csv(backtest_data_path)
 
-    optimal_alpha, optimal_kelly, df_results = optimize_risk_params(df_backtest_real)
+    # --- Apply Bias Correction ---
+    try:
+        with open("bias_correction.txt", "r") as f:
+            bias_correction_factor = float(f.read())
+        
+        df_backtest_real['y_pred'] = df_backtest_real['y_pred'] + bias_correction_factor
+        logger.info(f"Applying bias correction of {bias_correction_factor:.2f} to all predictions.")
+    except (FileNotFoundError, ValueError):
+        logger.warning("bias_correction.txt not found or invalid. Running optimizer without bias correction.")
+
+    # --- Load Real Price Data ---
+    try:
+        with open(week_map_path, "r") as f:
+            week_to_market_map = json.load(f)
+        logger.success(f"Loaded {len(week_to_market_map)} week-to-market ID mappings.")
+    except (FileNotFoundError, json.JSONDecodeError):
+        logger.warning("Week-to-market map not found or invalid. Proceeding with simulation only.")
+        week_to_market_map = {}
+
+    try:
+        with open(price_history_path, "r") as f:
+            price_histories = json.load(f)
+        logger.success(f"Loaded price histories for {len(price_histories)} markets.")
+    except (FileNotFoundError, json.JSONDecodeError):
+        logger.warning("Price histories not found or invalid. Proceeding with simulation only.")
+        price_histories = {}
+
+    # --- Run Optimization ---
+    optimal_alpha, optimal_kelly, df_results = optimize_risk_params(
+        df_backtest_real, week_to_market_map, price_histories
+    )
 
     params = {
         "alpha": optimal_alpha,
@@ -198,9 +254,10 @@ if __name__ == "__main__":
         pickle.dump(params, f)
     logger.info("\n💾 Optimal risk parameters saved to 'risk_params.pkl'")
 
+    # --- Run Final Simulation ---
     logger.info("\n--- Final Simulation with Optimal Parameters ---")
-    best_equity, best_mdd, best_avg_ev = simulate_trading_run(
-        df_backtest_real, optimal_alpha, optimal_kelly,
+    best_equity, best_mdd, best_avg_ev, trades_log = simulate_trading_run(
+        df_backtest_real, optimal_alpha, optimal_kelly, week_to_market_map, price_histories
     )
 
     final_capital = best_equity.iloc[-1]
@@ -213,6 +270,20 @@ if __name__ == "__main__":
     logger.info(f"Final ROI      : {final_roi:.2%}")
     logger.info(f"Max Drawdown   : {best_mdd:.2%}")
     logger.info(f"Avg EV (final) : {best_avg_ev:.4f}")
+
+    # --- Display Trades Log ---
+    if trades_log:
+        logger.info("\n--- Trade Operations Log ---")
+        df_trades = pd.DataFrame(trades_log)
+        # Convert numeric columns to appropriate types for formatting
+        for col in ['model_prob', 'market_price', 'edge', 'bet_size_usd', 'pnl']:
+            df_trades[col] = pd.to_numeric(df_trades[col])
+        
+        # Use tabulate for clean printing
+        from tabulate import tabulate
+        print(tabulate(df_trades, headers='keys', tablefmt='psql', floatfmt=(".4f", ".4f", ".4f", ".2f", ".2f")))
+    else:
+        logger.info("No trades were executed in the final simulation.")
 
     # Plotting section
     plt.figure(figsize=(8, 5))
