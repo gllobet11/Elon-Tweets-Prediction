@@ -10,78 +10,69 @@ This project implements a quantitative pipeline to predict Elon Musk's weekly tw
 
 ## 2. Architecture & Workflow
 
-The project is divided into two main phases: **Offline Analysis & Optimization** (steps you run manually to prepare the models) and the **Live Dashboard** (the interactive Streamlit application).
+The project is divided into two main phases: an **Offline Pipeline** for data processing and model training, and a **Live Dashboard** for analysis and trading signals. The entire offline process can be executed with a single automated script.
 
-### Phase 1: Offline Analysis & Model Generation
+### The Automated Pipeline (`run_pipeline.sh`)
 
-This phase involves preparing and optimizing the predictive model and financial strategy parameters. These steps are typically run when you want to update your model, re-evaluate its performance, or fine-tune its parameters.
+A bash script is provided to run the entire offline workflow. It automates all the necessary steps, from data ingestion to financial optimization.
+
+**How to Run:**
+```bash
+# Activate your virtual environment first
+# On Windows (Git Bash)
+source .venv/Scripts/activate
+# On macOS/Linux
+# source .venv/bin/activate
+
+# Run the full pipeline
+bash run_pipeline.sh
+```
+
+**Optional Flags:**
+-   `--optimize`: Runs a comprehensive hyperparameter tuning process for the Prophet model and Negative Binomial distribution. This is computationally intensive and should be used periodically, not on every run.
+-   `--visuals`: Generates a plot comparing the backtest performance of all candidate models against the actual tweet counts.
+
+**Example with flags:**
+```bash
+bash run_pipeline.sh --optimize --visuals
+```
+
+### Manual Workflow Steps
+
+The automated script executes the following steps, which can also be run manually for debugging or granular control.
 
 **Step 1: Ingest and Unify Data (`run_ingest.py`)**
-This script fetches the latest tweets and merges them with the historical dataset. **Run this every time you want to update the data.**
-```bash
-python run_ingest.py
-```
+-   **Purpose**: Fetches the latest tweets and merges them with the historical dataset.
+-   **Command**: `python run_ingest.py`
 -   **Output**: `data/processed/merged_elon_tweets.csv`
 
-**Step 2: Hyperparameter Tuning (Optional, Advanced) (`tools/hyperparameter_tuner.py`)**
-This script performs an extensive search for the optimal Prophet model hyperparameters (e.g., `changepoint_prior_scale`, `seasonality_prior_scale`) and Negative Binomial distribution parameters (`alpha`) using walk-forward validation. This is generally a **one-time optimization step** after feature engineering, or when you suspect model performance has degraded.
-```bash
-python tools/hyperparameter_tuner.py
-```
--   **Output**: Logs showing the best found hyperparameters. No direct file output, but guides subsequent steps.
+**Step 2: Model Evaluation and Training (`tools/model_analysis.py`)**
+-   **Purpose**: Compares different model configurations (feature sets), trains the best one, and saves it as a `.pkl` file. It also generates the data for the multi-model backtest visualization.
+-   **Command**: `python tools/model_analysis.py --task train_and_evaluate`
+-   **Outputs**: 
+    -   `best_prophet_model_YYYYMMDD.pkl`
+    -   `data/processed/all_models_historical_performance.csv`
 
-**Step 3: Evaluate Models & Train/Save the Best Production Model (`tools/models_evals.py`)**
-This script performs a walk-forward validation to evaluate different model configurations and, crucially, trains and saves the **production-ready Prophet model** with the optimal features and hyperparameters (including those found by `hyperparameter_tuner.py`).
-```bash
-python tools/models_evals.py
-```
--   **Output**: `best_prophet_model_YYYYMMDD.pkl` (e.g., `best_prophet_model_20251203.pkl`)
-
-**Step 4: Generate Historical Performance (`tools/generate_historical_performance.py`)**
-This script uses the **saved production model** (`best_prophet_model_YYYYMMDD.pkl`) to generate backtested predictions (`y_pred`, `y_pred_lower`, `y_pred_upper`) versus actual outcomes (`y_true`) for a specified number of past weeks. This output is critical for the financial optimizer and for visualizing historical performance with confidence bands.
-```bash
-python tools/generate_historical_performance.py
-```
+**Step 3: Generate Historical Performance (`tools/generate_historical_performance.py`)**
+-   **Purpose**: Uses the saved production model to generate backtested predictions for financial optimization.
+-   **Command**: `python tools/generate_historical_performance.py`
 -   **Output**: `data/processed/historical_performance.csv`
 
-**Step 5: Optimize Financial Parameters (`src/strategy/financial_optimizer.py`)**
-This script uses the `historical_performance.csv` data to find the optimal `alpha` (for the Negative Binomial distribution) and `kelly_fraction` that maximize the Calmar Ratio. This process is fully deterministic and also calculates the Expected Value (EV) of the strategy.
-```bash
-python src/strategy/financial_optimizer.py
-```
--   **Output**: `risk_params.pkl` (containing the optimized financial parameters).
+**Step 4: Optimize Financial Parameters (`src/strategy/financial_optimizer.py`)**
+-   **Purpose**: Finds the optimal risk parameters (Kelly fraction) by maximizing the Calmar Ratio based on the historical performance data.
+-   **Command**: `python src/strategy/financial_optimizer.py`
+-   **Output**: `risk_params.pkl`
 
-**Step 6: Visualize Historical Predictions (Optional) (`tools/visualize_predictions.py`)**
-This script generates a plot comparing the model's historical predictions against actuals, now including confidence bands, along with RMSE and Log Loss metrics. Useful for quick visual checks of model performance.
-```bash
-python tools/visualize_predictions.py
-```
--   **Output**: `historical_predictions_plot.png`
+### The Live Dashboard (`main.py`)
 
-### Phase 2: The Streamlit Dashboard (`main.py`)
-
-Once all the artifacts (`.csv`, `.pkl`) are generated, launch the interactive dashboard to see the final analysis and trading signals.
+Once all the artifacts are generated, the interactive Streamlit dashboard provides the final analysis and trading signals.
 
 **How to Launch:**
 ```bash
 streamlit run main.py
 ```
 
-The dashboard is built with a modular architecture that delegates tasks to specialized processors:
--   **`DashboardDataLoader`**: Loads all required data, including tweets, the Prophet model, risk parameters, and market data from Polymarket.
--   **`DashboardLogicProcessor`**: Executes the core business logic, such as calculating KPIs, generating the hybrid prediction for the current week, and calculating trading opportunities by comparing model probabilities to market prices.
--   **`DashboardChartGenerator`**: Creates all visualizations, such as statistical charts and the probability comparison graph.
-
-**Dashboard Features:**
--   **Current Week View**: The default view, showing:
-    -   A statistical analysis of recent tweet activity.
-    -   A "Hybrid Prediction" that combines actual tweets from the current week with model predictions for the remaining days.
-    -   A detailed "Trading Opportunities" table with the model's edge and the recommended Kelly Criterion bet size for each market outcome.
-    -   A probability chart comparing the model's predictions (a line) against the market's prices (bars).
--   **Historical Performance View**:
-    -   A dropdown menu allows you to select any previously backtested week.
-    -   Displays the model's prediction (`y_pred`) versus the actual outcome (`y_true`), now with confidence bands.
-    -   Shows a daily bar chart of tweet activity for the selected historical week, providing clear visual context on performance.
+The dashboard loads the latest data, the trained model, and the optimized risk parameters to provide real-time insights.
 
 ## 3. Installation and Usage
 
@@ -96,8 +87,8 @@ The dashboard is built with a modular architecture that delegates tasks to speci
     uv venv
 
     # Activate venv
-    # Windows
-    .venv\Scripts\activate
+    # Windows (in Git Bash)
+    source .venv/Scripts/activate
     # macOS/Linux
     source .venv/bin/activate
     ```
@@ -107,25 +98,30 @@ The dashboard is built with a modular architecture that delegates tasks to speci
     uv pip install -r requirements.txt
     ```
 
-4.  **Full Pipeline Execution (Daily / Weekly Refresh)**:
-    To update all predictions and parameters for the live dashboard:
+4.  **Run the Automated Pipeline:**
+    To update all data, train the model, and optimize parameters, simply run the pipeline script.
     ```bash
-    # Step 1: Ingest latest tweet data
-    python run_ingest.py
+    bash run_pipeline.sh
+    ```
+    *(Optional: Add `--optimize` or `--visuals` flags as needed.)*
 
-    # Step 2: Evaluate models, train and save the best production model
-    python tools/models_evals.py
-
-    # Step 3: Generate historical performance data using the best model
-    python tools/generate_historical_performance.py
-
-    # Step 4: Optimize financial parameters based on historical performance
-    python src/strategy/financial_optimizer.py
-
-    # Step 5: (Optional) Visualize historical predictions with confidence bands
-    python tools/visualize_predictions.py
-
-    # Step 6: Launch the interactive Streamlit dashboard
+5.  **Launch the Dashboard:**
+    After the pipeline completes, start the interactive application.
+    ```bash
     streamlit run main.py
     ```
-    **Note on Hyperparameter Tuning**: The `tools/hyperparameter_tuner.py` script is for **advanced, one-time optimization** of model parameters, not part of the regular refresh cycle. It helps determine the best settings used by `tools/models_evals.py`.
+
+## 4. Optional Tools
+
+The `tools/` directory contains consolidated scripts for advanced analysis, verification, and visualization.
+
+-   **`tools/model_analysis.py`**:
+    -   `--task display_feature_importance`: Shows Prophet regressor coefficients.
+    -   `--task run_forward_selection`: Performs a greedy feature selection.
+    -   `--task tune_hyperparameters`: Runs an extensive hyperparameter search.
+-   **`tools/visualization.py`**:
+    -   `--task visualize_predictions`: Plots the single best model's predictions with confidence intervals.
+    -   `--task visualize_multi_model_backtest`: Plots all candidate models' backtest predictions.
+    -   `--task visualize_regime_change`: Visualizes tweet activity Z-scores over time.
+-   **`tools/data_verification.py`**: A suite of tools to check data integrity at various stages.
+-   **`tools/utilities.py`**: Helper functions for inspecting saved `.pkl` files and testing the Polymarket feed.

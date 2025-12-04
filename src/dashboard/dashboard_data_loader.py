@@ -17,48 +17,41 @@ except ImportError as e:
 
 class DashboardDataLoader:
     """
-    Clase para cargar todos los datos y artefactos requeridos por el dashboard.
+    Class to load all data and artifacts required by the dashboard.
     """
 
     def __init__(self):
         """
-        Inicializa el cargador de datos.
+        Initializes the data loader.
         """
         self.market_keywords = MARKET_KEYWORDS
         self.poly_feed = PolymarketFeed()
 
     def load_and_prepare_tweets_data(self) -> tuple[pd.DataFrame, pd.Series]:
         """
-        Carga los datos unificados de tweets y los prepara en un formato granular
-        y series diarias de conteos.
+        Loads the unified tweet data and prepares it into a granular DataFrame
+        and a daily series of counts.
 
         Returns:
-            tuple[pd.DataFrame, pd.Series]: Una tupla que contiene:
-                - granular_df (pd.DataFrame): DataFrame de tweets con granularidad original.
-                - daily_series (pd.Series): Serie de conteos diarios de tweets.
+            tuple[pd.DataFrame, pd.Series]: A tuple containing:
+                - granular_df (pd.DataFrame): DataFrame of tweets with original granularity.
+                - daily_series (pd.Series): Series of daily tweet counts.
         """
-        logger.info("Ejecutando carga y preparación de datos de tweets...")
+        logger.info("Executing tweet data loading and preparation...")
 
         df_tweets = load_unified_data()
 
         if df_tweets.empty:
             logger.error(
-                "El DataFrame está VACÍO después de load_unified_data(). No se puede continuar.",
+                "DataFrame is EMPTY after load_unified_data(). Cannot continue.",
             )
-            # In a real app, you might want to stop or show an error message.
-            # For now, we'll return empty structures to prevent a crash downstream,
-            # though this will likely lead to other errors.
             return pd.DataFrame(), pd.Series(dtype="int64")
 
-        # Fuerza la conversión a UTC y maneja errores para asegurar que el groupby funcione
         df_tweets["created_at"] = pd.to_datetime(
             df_tweets["created_at"], utc=True, errors="coerce",
         )
-        # -------------------------------------
-
+        
         granular_df = df_tweets.copy()
-
-        # Elimina filas con fecha inválida (NaT) que rompen el groupby
         granular_df = granular_df.dropna(subset=["created_at"])
 
         daily_counts = (
@@ -74,57 +67,63 @@ class DashboardDataLoader:
         daily_series.index.name = "date"
 
         logger.info(
-            f"Datos cargados: {len(granular_df)} tweets, {len(daily_series)} días",
+            f"Data loaded: {len(granular_df)} tweets, {len(daily_series)} days",
         )
 
         return granular_df, daily_series
 
-    # ... resto de los métodos sin cambios ...
-
     def load_prophet_model(self) -> dict:
         """
-        Busca el último modelo Prophet pre-entrenado guardado (.pkl) y lo carga.
+        Finds the latest pre-trained Prophet model saved (.pkl) and loads it.
+        Also extracts the backtest MAE from the model's metadata.
         """
         model_files = glob.glob("best_prophet_model_*.pkl")
         if not model_files:
             raise FileNotFoundError(
-                "No se encontró ningún archivo de modelo Prophet (.pkl). Ejecuta `models_evals.py`.",
+                "No Prophet model file (.pkl) found. Please run `tools/model_analysis.py --task train_and_evaluate`.",
             )
         latest_model_path = max(model_files, key=os.path.getmtime)
         with open(latest_model_path, "rb") as f:
             model_data = pickle.load(f)
+        
+        # Extract MAE from the metrics dictionary
+        mae = model_data.get("metrics", {}).get("MAE", None)
+        if mae is not None:
+            model_data['mae'] = mae
+            logger.info(f"Backtest MAE found in model file: {mae:.2f}")
+
         logger.info(
-            f"Modelo '{model_data.get('model_name', 'Unknown')}' cargado desde '{os.path.basename(latest_model_path)}'.",
+            f"Model '{model_data.get('model_name', 'Unknown')}' loaded from '{os.path.basename(latest_model_path)}'.",
         )
         return model_data
 
     def load_risk_parameters(self) -> dict:
         """
-        Carga los parámetros de riesgo óptimos (alpha y kelly_fraction) desde 'risk_params.pkl'.
+        Loads the optimal risk parameters (alpha and kelly_fraction) from 'risk_params.pkl'.
         """
         try:
             with open("risk_params.pkl", "rb") as f:
                 risk_params = pickle.load(f)
             logger.info(
-                f"Parámetros de riesgo cargados. Alpha: {risk_params['alpha']:.4f}, Kelly: {risk_params['kelly']:.2f}.",
+                f"Risk parameters loaded. Alpha: {risk_params['alpha']:.4f}, Kelly: {risk_params['kelly']:.2f}.",
             )
             return risk_params
         except FileNotFoundError:
             logger.warning(
-                "`risk_params.pkl` no encontrado. Usando valores por defecto (alpha=0.2, kelly=0.1). Ejecuta `financial_optimizer.py`.",
+                "`risk_params.pkl` not found. Using default values (alpha=0.2, kelly=0.1). Run `financial_optimizer.py`.",
             )
             return {"alpha": 0.2, "kelly": 0.1}
 
     def fetch_market_data(self) -> dict:
         """
-        Obtiene los detalles y el estado actual del mercado de Polymarket.
+        Fetches the details and current state of the market from Polymarket.
         """
         market_details = self.poly_feed.get_market_details(
             keywords=self.market_keywords,
         )
         if not market_details:
             raise ValueError(
-                f"No se encontraron detalles del mercado para las keywords: {self.market_keywords}",
+                f"No market details found for keywords: {self.market_keywords}",
             )
 
         description = market_details.get("description", "")
@@ -141,7 +140,7 @@ class DashboardDataLoader:
 
         return {
             "market_details": market_details,
-            "market_question": market_details.get("question", "Título No Encontrado"),
+            "market_question": market_details.get("question", "Title Not Found"),
             "market_start_date": market_start_date,
             "market_end_date": market_end_date,
             "market_snapshot": market_snapshot,

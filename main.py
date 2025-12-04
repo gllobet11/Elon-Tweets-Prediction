@@ -118,6 +118,9 @@ try:
         # Calculate KPIs
         kpis = logic_processor.calculate_kpis(daily_data)
 
+        # Get MAE from model data
+        mae = model_data.get("mae", None)
+
         # Mostrar KPIs
         st.markdown("##### Key Recent Activity Metrics")
         c1, c2, c3, c4 = st.columns(4)
@@ -135,7 +138,10 @@ try:
             value=f"{kpis['outlier_days']} days",
             delta="High Volatility" if kpis["outlier_days"] >= 2 else "Stable",
         )
-        c4.metric(label="Standard Deviation (7d)", value=f"{kpis['std_7d']:.2f}")
+        if mae is not None:
+            c4.metric(label="Model MAE (Backtest)", value=f"{mae:.2f} tweets")
+        else:
+            c4.metric(label="Standard Deviation (7d)", value=f"{kpis['std_7d']:.2f}")
 
         # Statistical charts
         st.markdown("##### Activity Patterns (Last 6 Months)")

@@ -1,22 +1,26 @@
 # settings.py
 
 """
-Archivo de configuración para almacenar variables globales y parámetros del proyecto.
+Configuration file for storing global variables and project parameters.
 """
 
 # ==========================================
-# 1. CONFIGURACIÓN DEL MERCADO
+# 1. MARKET CONFIGURATION
 # ==========================================
 
-# Palabras clave para identificar el mercado correcto en Polymarket.
-# Es crucial que estas palabras clave sean lo suficientemente específicas para
-# encontrar un único mercado. Incluir el rango de fechas es una buena práctica.
+# Keywords to identify the correct market on Polymarket.
+# It's crucial that these keywords are specific enough to find a single market.
+# Including the date range is a good practice.
 MARKET_KEYWORDS = ["elon musk", "tweets", "december 2", "december 9"]
 
 # ==========================================
-# 2. CONFIGURACIÓN DE BACKTESTING Y OPTIMIZACIÓN
+# 2. BACKTESTING AND OPTIMIZATION CONFIGURATION
 # ==========================================
 
-# Número de semanas para usar en el backtesting (validación cruzada) y la optimización financiera.
-# Este valor determina cuántos períodos históricos se simularán.
+# Number of weeks to use in backtesting (cross-validation) and financial optimization.
+# This value determines how many historical periods will be simulated.
 WEEKS_TO_VALIDATE = 12
+
+# Alpha candidates for the Negative Binomial distribution.
+# This is a key hyperparameter for modeling the variance of the tweet count.
+ALPHA_CANDIDATES = [0.01]
