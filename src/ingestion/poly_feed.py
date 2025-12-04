@@ -3,6 +3,8 @@ import os
 import re
 import sys
 import time
+import httpx
+from datetime import datetime
 
 import pandas as pd  # Import pandas here to resolve NameError
 from loguru import logger
@@ -243,3 +245,48 @@ class PolymarketFeed:
         except Exception as e:
             logger.error(f"Error parsing market dates: {e}")
             return None, None
+
+    def get_price_history(self, market_id: str, fidelity: int = 15, start_timestamp: int = 1577836800) -> list | None: # Default to Jan 1, 2020 00:00:00 UTC
+        """
+        Fetches the historical price data for a specific market.
+
+        Args:
+            market_id (str): The market (asset) ID to fetch the history for.
+            fidelity (int): The fidelity of the data points.
+            start_timestamp (int): Unix timestamp (seconds) to start fetching history from.
+
+        Returns:
+            list | None: A list of historical price points, or None if an error occurs.
+        """
+        if not self.valid:
+            logger.error("ClobClient is not valid. Cannot fetch price history.")
+            return None
+
+        logger.info(f"Fetching price history for Market ID: {market_id}, from {datetime.fromtimestamp(start_timestamp)} UTC...")
+
+        # Use httpx directly for this endpoint, as ClobClient doesn't have a direct method.
+        # Wrap httpx.get in a lambda so it can be passed to _robust_api_call.
+        def api_func():
+            history_url = f"https://clob.polymarket.com/prices-history"
+            response = httpx.get(
+                history_url,
+                params={
+                    "market": market_id,
+                    "fidelity": fidelity,
+                    "startTs": start_timestamp # Include the start timestamp
+                }
+            )
+            response.raise_for_status() # Raise an exception for bad status codes
+            return response.json()
+
+        response_data = self._robust_api_call(api_func)
+
+        if response_data and "history" in response_data:
+            logger.success(f"Successfully fetched {len(response_data['history'])} data points for market {market_id}.")
+            return response_data["history"]
+        elif response_data:
+            logger.warning(f"Price history response for market {market_id} did not contain a 'history' key. Response: {response_data}")
+            return None
+        else:
+            logger.error(f"Failed to fetch price history for market {market_id}.")
+            return None
