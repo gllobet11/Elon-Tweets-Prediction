@@ -11,8 +11,11 @@ try:
     from config.settings import MARKET_KEYWORDS
     from src.ingestion.poly_feed import PolymarketFeed
     from src.ingestion.unified_feed import load_unified_data
+    
 except ImportError as e:
     logger.error(f"Error importing modules in dashboard_data_loader: {e}")
+    import traceback
+    traceback.print_exc()
 
 
 class DashboardDataLoader:

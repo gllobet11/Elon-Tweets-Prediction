@@ -11,7 +11,7 @@ Configuration file for storing global variables and project parameters.
 # Keywords to identify the correct market on Polymarket.
 # It's crucial that these keywords are specific enough to find a single market.
 # Including the date range is a good practice.
-MARKET_KEYWORDS = ["elon musk", "tweets", "december 2", "december 9"]
+MARKET_KEYWORDS = ["elon musk", "tweets", "december 5", "december 12"]
 
 # ==========================================
 # 2. BACKTESTING AND OPTIMIZATION CONFIGURATION

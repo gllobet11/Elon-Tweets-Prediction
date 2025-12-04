@@ -17,7 +17,7 @@ class PolymarketFeed:
             self.client = ClobClient(host, chain_id=chain_id)
             self.valid = True
         except Exception as e:
-            print(f"❌ Error inicializando ClobClient: {e}", file=sys.stderr)
+            print(f"❌ Error initializing ClobClient: {e}", file=sys.stderr)
             self.client = None
 
     def _robust_api_call(self, api_func, *args, retries=3, delay=2, **kwargs):
@@ -45,13 +45,13 @@ class PolymarketFeed:
                     cached_data = json.load(f)
                 if cached_data.get("keywords") == keywords:
                     logger.info(
-                        f"✅ IDs de mercado cargados desde la caché: {cache_path}",
+                        f"✅ Market IDs loaded from cache: {cache_path}",
                     )
                     return cached_data["bins_dict"]
         except (OSError, json.JSONDecodeError) as e:
-            logger.warning(f"⚠️ No se pudo leer la caché de IDs ({e}).")
+            logger.warning(f"⚠️ Could not read IDs cache ({e}).")
 
-        logger.info(f"🔎 Buscando mercados en la API (Keywords: {keywords})...")
+        logger.info(f"🔎 Searching markets on API (Keywords: {keywords})...")
 
         for bin_info in bins_dict.values():
             bin_info["id_yes"] = None
@@ -88,7 +88,7 @@ class PolymarketFeed:
                             if bins_dict[bin_label].get("id_yes") is None:
                                 bins_dict[bin_label]["id_yes"] = yes_token["token_id"]
                                 bins_dict[bin_label]["id_no"] = no_token["token_id"]
-                                logger.info(f"   [✅] Bin {bin_label} -> Mapeado")
+                                logger.info(f"   [✅] Bin {bin_label} -> Mapped")
                                 mapped_count += 1
 
             next_cursor = markets_resp.get("next_cursor")
@@ -96,7 +96,7 @@ class PolymarketFeed:
                 break
 
         logger.info(
-            f"✅ Mapeo completado: {mapped_count}/{len(bins_dict)} bins listos.",
+            f"✅ Mapping completed: {mapped_count}/{len(bins_dict)} bins ready.",
         )
 
         if mapped_count > 0:
@@ -104,9 +104,9 @@ class PolymarketFeed:
                 with open(cache_path, "w") as f:
                     cache_content = {"keywords": keywords, "bins_dict": bins_dict}
                     json.dump(cache_content, f, indent=2)
-                logger.info(f"✅ IDs de mercado guardados en caché: {cache_path}")
+                logger.info(f"✅ Market IDs saved to cache: {cache_path}")
             except OSError as e:
-                logger.warning(f"⚠️ No se pudo escribir en la caché de IDs: {e}")
+                logger.warning(f"⚠️ Could not write to IDs cache: {e}")
 
         return bins_dict
 
@@ -156,7 +156,7 @@ class PolymarketFeed:
 
     def get_all_bins_prices(self, bins_dict: dict):
         snapshot = {}
-        logger.info(f"📊 Obteniendo precios para {len(bins_dict)} bins...")
+        logger.info(f"📊 Getting prices for {len(bins_dict)} bins...")
         for bin_label, bin_data in bins_dict.items():
             if bin_data.get("id_yes") and bin_data.get("id_no"):
                 valuation = self.get_market_valuation(

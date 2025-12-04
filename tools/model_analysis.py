@@ -376,7 +376,7 @@ def evaluate_model_cv(
     validation_fridays = sorted([last_complete_friday - timedelta(weeks=i) for i in range(weeks_to_validate)])
     
     metrics = []
-    results_.df = run_weekly_walk_forward(all_features_df, regressors, validation_fridays)
+    results_df = run_weekly_walk_forward(all_features_df, regressors, validation_fridays)
     
     if results_df.empty:
         logger.warning("   ❌ No prediction results for the current configuration.")
