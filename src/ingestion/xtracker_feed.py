@@ -34,7 +34,9 @@ class XTrackerIngestor:
             # 1. Parsing Manual con el módulo csv
             records = []
             with open(
-                self.data_path, encoding="utf-8", errors="ignore",
+                self.data_path,
+                encoding="utf-8",
+                errors="ignore",
             ) as infile:
                 reader = csv.reader(infile)
                 header = next(reader)  # Saltar el encabezado

@@ -124,10 +124,12 @@ class ProphetInferenceModel:
                     if col in full_df_sorted.columns:
                         val = (
                             full_df_sorted.loc[
-                                full_df_sorted.index <= last_known_date, col,
+                                full_df_sorted.index <= last_known_date,
+                                col,
                             ].iloc[-1]
                             if not full_df_sorted.loc[
-                                full_df_sorted.index <= last_known_date, col,
+                                full_df_sorted.index <= last_known_date,
+                                col,
                             ].empty
                             else 0
                         )
@@ -196,8 +198,10 @@ class ProphetInferenceModel:
         )
 
     def predict_single_step(
-        self, target_date: pd.Timestamp, all_processed_features_df: pd.DataFrame,
-    ) -> tuple[float, float, float]: # Return yhat, yhat_lower, yhat_upper
+        self,
+        target_date: pd.Timestamp,
+        all_processed_features_df: pd.DataFrame,
+    ) -> tuple[float, float, float]:  # Return yhat, yhat_lower, yhat_upper
         """
         Predice 'y' para una única fecha objetivo (target_date) utilizando el modelo Prophet entrenado.
         Las características para target_date se extraen de all_processed_features_df.

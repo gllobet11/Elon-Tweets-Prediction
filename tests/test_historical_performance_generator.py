@@ -45,7 +45,8 @@ def mock_tweet_data(monkeypatch):
         return mock_df
 
     monkeypatch.setattr(
-        "tools.generate_historical_performance.load_unified_data", mock_load,
+        "tools.generate_historical_performance.load_unified_data",
+        mock_load,
     )
 
     expected_y_true = 7 * daily_tweets
@@ -76,7 +77,8 @@ def test_generate_backtest_predictions(mock_tweet_data):
         f"Running `generate_backtest_predictions` for {weeks_to_validate} weeks ending on {test_end_date}...",
     )
     df_performance = generate_backtest_predictions(
-        weeks_to_validate=weeks_to_validate, end_date=test_end_date,
+        weeks_to_validate=weeks_to_validate,
+        end_date=test_end_date,
     )
 
     print("Running assertions on the output DataFrame...")

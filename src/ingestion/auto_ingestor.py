@@ -88,7 +88,8 @@ class AutoIngestor:
 
                         download = download_info.value
                         destination_path = os.path.join(
-                            self.download_path, download.suggested_filename,
+                            self.download_path,
+                            download.suggested_filename,
                         )
                         download.save_as(destination_path)
 

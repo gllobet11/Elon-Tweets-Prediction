@@ -10,7 +10,11 @@ class DistributionConverter:
 
     @staticmethod
     def get_bin_probabilities(
-        mu_remainder, current_actuals, model_type="nbinom", alpha=0.2, bins_config=None,
+        mu_remainder,
+        current_actuals,
+        model_type="nbinom",
+        alpha=0.2,
+        bins_config=None,
     ):
         logger.info("DEBUG prob_math.py: Inside get_bin_probabilities:")
         logger.info(f"  mu_remainder={mu_remainder}, type={type(mu_remainder)}")
@@ -77,11 +81,14 @@ class DistributionConverter:
             # 4. Cálculo de Probabilidad (CDF del remanente)
             if model_type == "poisson":
                 prob = stats.poisson.cdf(high_rem, mu_rem) - stats.poisson.cdf(
-                    low_rem - 1, mu_rem,
+                    low_rem - 1,
+                    mu_rem,
                 )
             else:  # NBinom
                 prob = stats.nbinom.cdf(high_rem, n_param, p_param) - stats.nbinom.cdf(
-                    low_rem - 1, n_param, p_param,
+                    low_rem - 1,
+                    n_param,
+                    p_param,
                 )
 
             probabilities[bin_label] = prob
@@ -90,7 +97,11 @@ class DistributionConverter:
 
     @staticmethod
     def calculate_kelly_bet(
-        my_prob, market_price, bankroll, kelly_fraction=0.2, max_position=0.2,
+        my_prob,
+        market_price,
+        bankroll,
+        kelly_fraction=0.2,
+        max_position=0.2,
     ):
         """
         Calcula el tamaño de la apuesta ($) según Kelly.

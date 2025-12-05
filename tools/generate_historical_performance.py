@@ -10,7 +10,7 @@ This data is then used by the main dashboard to display historical performance.
 
 import glob
 import os
-import pickle # Added this
+import pickle
 import sys
 from datetime import timedelta
 
@@ -38,7 +38,10 @@ except (ImportError, ModuleNotFoundError) as e:
 
 # --- Configuration ---
 OUTPUT_PATH = os.path.join(
-    project_root, "data", "processed", "historical_performance.csv",
+    project_root,
+    "data",
+    "processed",
+    "historical_performance.csv",
 )
 
 
@@ -47,7 +50,7 @@ def generate_backtest_predictions(weeks_to_validate: int, end_date=None):
     Generates backtest predictions using the best Prophet model.
     """
     print("⚙️  Generating backtest predictions...")
-    
+
     # 1. Load the best Prophet model
     model_files = glob.glob("best_prophet_model_*.pkl")
     if not model_files:
@@ -57,11 +60,13 @@ def generate_backtest_predictions(weeks_to_validate: int, end_date=None):
     latest_model_path = max(model_files, key=os.path.getmtime)
     with open(latest_model_path, "rb") as f:
         model_package = pickle.load(f)
-    
-    m = model_package['model']
-    best_config_regressors = model_package['regressors']
-    
-    print(f"   -> Model '{model_package.get('model_name', 'Unknown')}' loaded from '{os.path.basename(latest_model_path)}'.")
+
+    m = model_package["model"]
+    best_config_regressors = model_package["regressors"]
+
+    print(
+        f"   -> Model '{model_package.get('model_name', 'Unknown')}' loaded from '{os.path.basename(latest_model_path)}'."
+    )
     print(f"   -> Using regressors: {best_config_regressors}")
 
     # 2. Load and process features
@@ -75,13 +80,17 @@ def generate_backtest_predictions(weeks_to_validate: int, end_date=None):
     all_features = FeatureEngineer().process_data(df_tweets)
 
     # Prepare Prophet DataFrame format
-    prophet_df = all_features.reset_index().rename(
-        columns={"date": "ds", "n_tweets": "y"},
-    )
+    # --- FIX START: Preparar el DataFrame para Prophet ---
+    prophet_df = all_features.copy()
+    prophet_df.index.name = "ds"
+    prophet_df = prophet_df.reset_index()
+    prophet_df = prophet_df.rename(columns={"n_tweets": "y"})
+    # --- FIX END ---
+
     if prophet_df["ds"].dt.tz is not None:
         prophet_df["ds"] = prophet_df["ds"].dt.tz_localize(None)
 
-    # Ensure all regressors are present and filled
+    # Ensure all regressor columns exist and are filled
     if best_config_regressors:
         for col in [r for r in best_config_regressors if r not in prophet_df.columns]:
             prophet_df[col] = 0.0
@@ -117,15 +126,19 @@ def generate_backtest_predictions(weeks_to_validate: int, end_date=None):
         future = pd.DataFrame({"ds": test_dates})
         if best_config_regressors:
             future = future.merge(
-                prophet_df[["ds"] + best_config_regressors], on="ds", how="left",
+                prophet_df[["ds"] + best_config_regressors],
+                on="ds",
+                how="left",
             ).fillna(0)
 
         # Make prediction
         forecast = m.predict(future)
-        
+
         # Merge predictions with true values and capture uncertainty intervals
         result_week = forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]].merge(
-            prophet_df[["ds", "y"]], on="ds", how="left",
+            prophet_df[["ds", "y"]],
+            on="ds",
+            how="left",
         )
         result_week["week_start_date"] = friday_date
         predictions_data.append(result_week)
@@ -148,7 +161,7 @@ def generate_backtest_predictions(weeks_to_validate: int, end_date=None):
     )
 
     # Filter out weeks that might be incomplete (if actual y_true < 100)
-    df_weekly = df_weekly[df_weekly["y_true"] > 100] # Use original filter
+    df_weekly = df_weekly[df_weekly["y_true"] > 100]  # Use original filter
 
     df_weekly.index.name = "week_start_date"
 

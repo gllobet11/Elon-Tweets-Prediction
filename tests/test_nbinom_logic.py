@@ -51,12 +51,17 @@ def run_stability_test():
         try:
             # Poisson probabilities (alpha is ignored)
             poisson_probs = DistributionConverter.get_bin_probabilities(
-                mu=mu, model_type="poisson", bins_config=bins_config,
+                mu=mu,
+                model_type="poisson",
+                bins_config=bins_config,
             )
 
             # Negative Binomial probabilities
             nbinom_probs = DistributionConverter.get_bin_probabilities(
-                mu=mu, model_type="nbinom", alpha=alpha, bins_config=bins_config,
+                mu=mu,
+                model_type="nbinom",
+                alpha=alpha,
+                bins_config=bins_config,
             )
 
             # --- Create Comparison DataFrame ---
@@ -85,7 +90,10 @@ def run_stability_test():
 
             # --- Display DataFrame ---
             with pd.option_context(
-                "display.max_rows", None, "display.float_format", "{:.4f}".format,
+                "display.max_rows",
+                None,
+                "display.float_format",
+                "{:.4f}".format,
             ):
                 print(comparison_df.to_string(index=False))
 

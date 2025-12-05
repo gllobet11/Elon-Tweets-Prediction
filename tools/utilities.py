@@ -2,7 +2,7 @@ import argparse
 import os
 import pickle
 import glob
-import sys # Added sys import
+import sys  # Added sys import
 from pprint import pprint
 
 # --- Path Configuration ---
@@ -16,6 +16,7 @@ try:
 except Exception as e:
     print(f"Error configuring project root or importing modules: {e}")
     sys.exit(1)
+
 
 def inspect_pkl_file():
     """
@@ -47,6 +48,7 @@ def inspect_pkl_file():
     except Exception as e:
         print(f"❌ An error occurred: {e}")
 
+
 def test_final_price_logic():
     """
     Final test script to verify price fetching logic.
@@ -64,7 +66,8 @@ def test_final_price_logic():
         # 1. Map IDs
         print("\n🔎 Mapping 'Yes' and 'No' token IDs for each bin...")
         updated_bins = poly_feed.fetch_market_ids_automatically(
-            keywords=MARKET_KEYWORDS, bins_dict=MARKET_BINS,
+            keywords=MARKET_KEYWORDS,
+            bins_dict=MARKET_BINS,
         )
 
         # 2. Get prices
@@ -77,6 +80,7 @@ def test_final_price_logic():
 
     except Exception as e:
         print(f"\n❌ A fatal error occurred during the test: {e}")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Utility tools.")
@@ -93,6 +97,7 @@ def main():
         inspect_pkl_file()
     elif args.task == "test_market_prices":
         test_final_price_logic()
+
 
 if __name__ == "__main__":
     main()

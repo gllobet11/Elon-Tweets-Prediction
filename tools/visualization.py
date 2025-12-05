@@ -10,35 +10,39 @@ import numpy as np
 
 # --- Path Configuration ---
 try:
-    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
-    
+
     from src.strategy.prob_math import DistributionConverter
     from config.bins_definition import MARKET_BINS
-    from config.settings import ALPHA_CANDIDATES  # Corrected import
+    from config.settings import ALPHA_CANDIDATES, WEEKS_TO_VALIDATE  # Corrected import, added WEEKS_TO_VALIDATE
     from src.ingestion.unified_feed import load_unified_data
     from src.processing.feature_eng import FeatureEngineer
+    from tools.generate_historical_performance import generate_backtest_predictions # Add this import
 except Exception as e:
     logger.error(f"Error import: {e}")
     sys.exit(1)
 
 # --- CONFIGURATION ---
-HISTORICAL_PERFORMANCE_PATH = os.path.join(project_root, 'data', 'processed', 'historical_performance.csv')
-OUTPUT_PLOT_PATH = os.path.join(project_root, 'historical_predictions_plot.png')
-REGIME_CHANGE_PLOT_PATH = os.path.join(project_root, 'regime_change_visualization.png')
-LOOKBACK_WEEKS = 52
+HISTORICAL_PERFORMANCE_PATH = os.path.join(
+    project_root, "data", "processed", "historical_performance.csv"
+)
+OUTPUT_PLOT_PATH = os.path.join(project_root, "historical_predictions_plot.png")
+REGIME_CHANGE_PLOT_PATH = os.path.join(project_root, "regime_change_visualization.png")
+# LOOKBACK_WEEKS = 52 # REMOVE THIS LINE
 NUM_CHANGES = 3
 MIN_WEEKS_SEPARATION = 8
 
 OPTIMAL_ALPHA = ALPHA_CANDIDATES[0]
-OPTIMAL_DISTRIBUTION = 'nbinom'
-BINS_CONFIG_LIST = [(k, v['lower'], v['upper']) for k, v in MARKET_BINS.items()]
+OPTIMAL_DISTRIBUTION = "nbinom"
+BINS_CONFIG_LIST = [(k, v["lower"], v["upper"]) for k, v in MARKET_BINS.items()]
+
 
 def calculate_log_loss_for_row(row: pd.Series) -> float:
     """Calculates Log Loss for a single row of predictions."""
-    mu_pred = row['y_pred']
-    y_true = row['y_true']
+    mu_pred = row["y_pred"]
+    y_true = row["y_true"]
 
     try:
         probs = DistributionConverter.get_bin_probabilities(
@@ -46,7 +50,7 @@ def calculate_log_loss_for_row(row: pd.Series) -> float:
             current_actuals=0,
             model_type=OPTIMAL_DISTRIBUTION,
             alpha=OPTIMAL_ALPHA,
-            bins_config=BINS_CONFIG_LIST
+            bins_config=BINS_CONFIG_LIST,
         )
     except ValueError:
         return np.nan
@@ -56,50 +60,74 @@ def calculate_log_loss_for_row(row: pd.Series) -> float:
         if lower <= y_true < upper:
             correct_bin = label
             break
-    
+
     if correct_bin is None:
         return np.nan
 
-    prob_correct = (probs.get(correct_bin, 0) + 1e-9)
+    prob_correct = probs.get(correct_bin, 0) + 1e-9
     return -np.log(prob_correct)
 
 
 def visualize_predictions_and_metrics():
     logger.info("📊 Starting visualization of historical predictions...")
 
-    if not os.path.exists(HISTORICAL_PERFORMANCE_PATH):
-        logger.error(f"Historical performance data not found at '{HISTORICAL_PERFORMANCE_PATH}'.")
-        logger.error("Please run `tools/generate_historical_performance.py` first.")
+    # Load historical predictions directly from the generation function
+    df_hist = generate_backtest_predictions(weeks_to_validate=WEEKS_TO_VALIDATE)
+
+    if df_hist.empty:
+        logger.error("No historical prediction data generated for visualization. Exiting.")
         sys.exit(1)
 
-    df_hist = pd.read_csv(HISTORICAL_PERFORMANCE_PATH)
-    df_hist['week_start_date'] = pd.to_datetime(df_hist['week_start_date'])
-    df_hist = df_hist.sort_values('week_start_date').set_index('week_start_date')
+    df_hist["week_start_date"] = pd.to_datetime(df_hist["week_start_date"])
+    df_hist = df_hist.sort_values("week_start_date").set_index("week_start_date")
 
-    df_hist['log_loss'] = df_hist.apply(calculate_log_loss_for_row, axis=1)
-    avg_log_loss = df_hist['log_loss'].mean()
-    
-    rmse = np.sqrt(np.mean((df_hist['y_true'] - df_hist['y_pred'])**2))
+    df_hist["log_loss"] = df_hist.apply(calculate_log_loss_for_row, axis=1)
+    avg_log_loss = df_hist["log_loss"].mean()
+
+    rmse = np.sqrt(np.mean((df_hist["y_true"] - df_hist["y_pred"]) ** 2))
 
     logger.info(f"Visualizing predictions for {len(df_hist)} weeks.")
     logger.info(f"Average Log Loss: {avg_log_loss:.4f}")
     logger.info(f"RMSE: {rmse:.2f}")
 
     plt.figure(figsize=(14, 7))
-    sns.lineplot(data=df_hist, x=df_hist.index, y='y_true', label='Actual Tweets (y_true)', marker='o', color='blue')
-    sns.lineplot(data=df_hist, x=df_hist.index, y='y_pred', label='Predicted Tweets (y_pred)', marker='x', linestyle='--', color='orange')
-    
-    plt.fill_between(df_hist.index, df_hist['y_pred_lower'], df_hist['y_pred_upper'], color='orange', alpha=0.2, label='Confidence Interval')
+    sns.lineplot(
+        data=df_hist,
+        x=df_hist.index,
+        y="y_true",
+        label="Actual Tweets (y_true)",
+        marker="o",
+        color="blue",
+    )
+    sns.lineplot(
+        data=df_hist,
+        x=df_hist.index,
+        y="y_pred",
+        label="Predicted Tweets (y_pred)",
+        marker="x",
+        linestyle="--",
+        color="orange",
+    )
 
-    plt.title('Historical Tweet Predictions vs. Actuals with Confidence Interval')
-    plt.xlabel('Week Start Date')
-    plt.ylabel('Number of Tweets')
+    plt.fill_between(
+        df_hist.index,
+        df_hist["y_pred_lower"],
+        df_hist["y_pred_upper"],
+        color="orange",
+        alpha=0.2,
+        label="Confidence Interval",
+    )
+
+    plt.title("Historical Tweet Predictions vs. Actuals with Confidence Interval")
+    plt.xlabel("Week Start Date")
+    plt.ylabel("Number of Tweets")
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
-    
+
     plt.savefig(OUTPUT_PLOT_PATH)
     logger.success(f"Plot saved to: {OUTPUT_PLOT_PATH}")
+
 
 def visualize_regime_change():
     """
@@ -115,10 +143,10 @@ def visualize_regime_change():
         # 2. Generate features, including the Z-score
         feat_eng = FeatureEngineer()
         all_features = feat_eng.process_data(df_tweets)
-        
+
         # 3. Prepare data for visualization
-        monthly_counts = all_features['n_tweets'].resample('MS').sum()
-        z_score_series = all_features['regime_intensity'].dropna()
+        monthly_counts = all_features["n_tweets"].resample("MS").sum()
+        z_score_series = all_features["regime_intensity"].dropna()
 
         # 4. Generate the visualization
         sns.set_style("whitegrid")
@@ -144,9 +172,13 @@ def visualize_regime_change():
             label="Regime Intensity (Z-score)",
         )
         # Add threshold lines
-        ax2.axhline(2.0, color='r', linestyle='--', lw=1, label='High Regime Threshold (+2.0)')
-        ax2.axhline(-2.0, color='r', linestyle=':', lw=1, label='Low Regime Threshold (-2.0)')
-        
+        ax2.axhline(
+            2.0, color="r", linestyle="--", lw=1, label="High Regime Threshold (+2.0)"
+        )
+        ax2.axhline(
+            -2.0, color="r", linestyle=":", lw=1, label="Low Regime Threshold (-2.0)"
+        )
+
         ax2.set_title("Daily Regime Intensity (Z-score of Tweet Count)", fontsize=16)
         ax2.set_ylabel("Z-score")
         ax2.set_xlabel("Date")
@@ -173,14 +205,16 @@ def find_and_visualize_top_changes():
 
     # Use FeatureEngineer to get regime intensity (Z-score)
     feat_eng = FeatureEngineer()
-    all_features = feat_eng.process_data(df_tweets) # Corrected call
+    all_features = feat_eng.process_data(df_tweets)  # Corrected call
 
     # Consider only the last year for selecting top changes
-    recent_features = all_features.tail(LOOKBACK_WEEKS * 7) # Daily data
+    recent_features = all_features.tail(LOOKBACK_WEEKS * 7)  # Daily data
 
     # Greedy algorithm to find top N distinct changes based on Z-score
-    candidates = recent_features.reindex(recent_features['regime_intensity'].abs().sort_values(ascending=False).index)
-    
+    candidates = recent_features.reindex(
+        recent_features["regime_intensity"].abs().sort_values(ascending=False).index
+    )
+
     top_changes = {}
     selected_dates = []
 
@@ -195,9 +229,9 @@ def find_and_visualize_top_changes():
                 break
 
         if is_far_enough:
-            top_changes[date] = row['regime_intensity']
+            top_changes[date] = row["regime_intensity"]
             selected_dates.append(date)
-    
+
     print(
         f"\nTop {NUM_CHANGES} distinct regime changes (>{MIN_WEEKS_SEPARATION} weeks apart) based on Z-score:",
     )
@@ -207,11 +241,14 @@ def find_and_visualize_top_changes():
     # --- Visualization ---
     plt.style.use("seaborn-v0_8-whitegrid")
     fig, ax = plt.subplots(figsize=(15, 7))
-    
+
     # Plotting weekly tweet counts for context
     weekly_counts = df_tweets.resample("W-MON", on="created_at").size()
     weekly_counts.tail(LOOKBACK_WEEKS).plot(
-        ax=ax, label="Weekly Tweet Count", color="cornflowerblue", lw=2,
+        ax=ax,
+        label="Weekly Tweet Count",
+        color="cornflowerblue",
+        lw=2,
     )
 
     for date, z_score in top_changes.items():
@@ -240,38 +277,61 @@ def find_and_visualize_top_changes():
 
 def visualize_multi_model_backtest():
     logger.info("📊 Starting visualization of multi-model backtest performance...")
-    
-    multi_model_performance_path = os.path.join(project_root, 'data', 'processed', 'all_models_historical_performance.csv')
+
+    multi_model_performance_path = os.path.join(
+        project_root, "data", "processed", "all_models_historical_performance.csv"
+    )
     if not os.path.exists(multi_model_performance_path):
-        logger.error(f"Multi-model performance data not found at '{multi_model_performance_path}'.")
-        logger.error("Please run `tools/model_analysis.py --task train_and_evaluate` first.")
+        logger.error(
+            f"Multi-model performance data not found at '{multi_model_performance_path}'."
+        )
+        logger.error(
+            "Please run `tools/model_analysis.py --task train_and_evaluate` first."
+        )
         sys.exit(1)
 
     df = pd.read_csv(multi_model_performance_path)
-    df['week_start'] = pd.to_datetime(df['week_start'])
-    
+    df["week_start"] = pd.to_datetime(df["week_start"])
+
     # Melt the dataframe to make it suitable for seaborn lineplot
-    id_vars = ['week_start', 'y_true']
-    value_vars = [col for col in df.columns if 'y_pred' in col]
-    df_melted = df.melt(id_vars=id_vars, value_vars=value_vars, var_name='model', value_name='y_pred')
-    df_melted['model'] = df_melted['model'].str.replace('y_pred_', '')
+    id_vars = ["week_start", "y_true"]
+    value_vars = [col for col in df.columns if "y_pred" in col]
+    df_melted = df.melt(
+        id_vars=id_vars, value_vars=value_vars, var_name="model", value_name="y_pred"
+    )
+    df_melted["model"] = df_melted["model"].str.replace("y_pred_", "")
 
     plt.figure(figsize=(15, 8))
-    
+
     # Plot y_true
-    sns.lineplot(data=df, x='week_start', y='y_true', label='Actual Tweets (y_true)', color='black', marker='o', linewidth=2.5)
-    
+    sns.lineplot(
+        data=df,
+        x="week_start",
+        y="y_true",
+        label="Actual Tweets (y_true)",
+        color="black",
+        marker="o",
+        linewidth=2.5,
+    )
+
     # Plot predictions for each model
-    sns.lineplot(data=df_melted, x='week_start', y='y_pred', hue='model', marker='x', linestyle='--')
-    
-    plt.title('Multi-Model Backtest Performance', fontsize=16)
-    plt.xlabel('Week Start Date')
-    plt.ylabel('Number of Tweets')
+    sns.lineplot(
+        data=df_melted,
+        x="week_start",
+        y="y_pred",
+        hue="model",
+        marker="x",
+        linestyle="--",
+    )
+
+    plt.title("Multi-Model Backtest Performance", fontsize=16)
+    plt.xlabel("Week Start Date")
+    plt.ylabel("Number of Tweets")
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
-    
-    output_path = os.path.join(project_root, 'multi_model_backtest_plot.png')
+
+    output_path = os.path.join(project_root, "multi_model_backtest_plot.png")
     plt.savefig(output_path)
     logger.success(f"Multi-model backtest plot saved to: {output_path}")
 
@@ -282,7 +342,12 @@ def main():
         "--task",
         type=str,
         required=True,
-        choices=["visualize_predictions", "visualize_regime_change", "visualize_top_changes", "visualize_multi_model_backtest"],
+        choices=[
+            "visualize_predictions",
+            "visualize_regime_change",
+            "visualize_top_changes",
+            "visualize_multi_model_backtest",
+        ],
         help="The visualization task to execute.",
     )
     args = parser.parse_args()

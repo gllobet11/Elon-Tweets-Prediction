@@ -24,7 +24,11 @@ def test_basic_nbinom_calculation():
     alpha = 0.05
 
     probs = DistributionConverter.get_bin_probabilities(
-        mu_remainder, current_actuals, "nbinom", alpha, BINS_CONFIG_EXAMPLE,
+        mu_remainder,
+        current_actuals,
+        "nbinom",
+        alpha,
+        BINS_CONFIG_EXAMPLE,
     )
 
     assert isinstance(probs, dict)
@@ -47,7 +51,11 @@ def test_impossible_bin_due_to_high_actuals():
     alpha = 0.05
 
     probs = DistributionConverter.get_bin_probabilities(
-        mu_remainder, current_actuals, "nbinom", alpha, BINS_CONFIG_EXAMPLE,
+        mu_remainder,
+        current_actuals,
+        "nbinom",
+        alpha,
+        BINS_CONFIG_EXAMPLE,
     )
 
     # Bins "0-199", "200-219" are impossible now. Their high limit is below current_actuals.
@@ -73,7 +81,11 @@ def test_shift_logic_when_actuals_are_in_a_bin():
     alpha = 0.05
 
     probs = DistributionConverter.get_bin_probabilities(
-        mu_remainder, current_actuals, "nbinom", alpha, BINS_CONFIG_EXAMPLE,
+        mu_remainder,
+        current_actuals,
+        "nbinom",
+        alpha,
+        BINS_CONFIG_EXAMPLE,
     )
 
     # "0-199" is impossible
@@ -97,7 +109,11 @@ def test_zero_alpha_handling():
 
     try:
         probs = DistributionConverter.get_bin_probabilities(
-            mu_remainder, current_actuals, "nbinom", alpha, BINS_CONFIG_EXAMPLE,
+            mu_remainder,
+            current_actuals,
+            "nbinom",
+            alpha,
+            BINS_CONFIG_EXAMPLE,
         )
         assert np.isclose(sum(probs.values()), 1.0, atol=1e-5)
     except ZeroDivisionError:

@@ -2,7 +2,7 @@
 GEMINI.md
 prompt_chatgpt.md
 prompt_critique.md
-
+debug_dumps/
 # Generated artifacts
 *.pkl
 *.png

@@ -34,7 +34,9 @@ class InferenceModel:
 
         self.alpha = self._estimate_alpha(y_train)
         model = sm.GLM(
-            y_train, X_train_const, family=NegativeBinomial(alpha=self.alpha),
+            y_train,
+            X_train_const,
+            family=NegativeBinomial(alpha=self.alpha),
         )
         self.model_res = model.fit()
 

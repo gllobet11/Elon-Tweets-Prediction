@@ -11,10 +11,11 @@ try:
     from config.settings import MARKET_KEYWORDS
     from src.ingestion.poly_feed import PolymarketFeed
     from src.ingestion.unified_feed import load_unified_data
-    
+
 except ImportError as e:
     logger.error(f"Error importing modules in dashboard_data_loader: {e}")
     import traceback
+
     traceback.print_exc()
 
 
@@ -30,15 +31,15 @@ class DashboardDataLoader:
         self.market_keywords = MARKET_KEYWORDS
         self.poly_feed = PolymarketFeed()
 
-    def load_and_prepare_tweets_data(self) -> tuple[pd.DataFrame, pd.Series]:
+    def load_and_prepare_tweets_data(self) -> tuple[pd.DataFrame, pd.DataFrame]:
         """
         Loads the unified tweet data and prepares it into a granular DataFrame
-        and a daily series of counts.
+        and a daily DataFrame of counts.
 
         Returns:
-            tuple[pd.DataFrame, pd.Series]: A tuple containing:
+            tuple[pd.DataFrame, pd.DataFrame]: A tuple containing:
                 - granular_df (pd.DataFrame): DataFrame of tweets with original granularity.
-                - daily_series (pd.Series): Series of daily tweet counts.
+                - daily_df (pd.DataFrame): DataFrame of daily tweet counts with 'n_tweets' column.
         """
         logger.info("Executing tweet data loading and preparation...")
 
@@ -51,34 +52,39 @@ class DashboardDataLoader:
             return pd.DataFrame(), pd.Series(dtype="int64")
 
         df_tweets["created_at"] = pd.to_datetime(
-            df_tweets["created_at"], utc=True, errors="coerce",
+            df_tweets["created_at"],
+            utc=True,
+            errors="coerce",
         )
-        
+
         granular_df = df_tweets.copy()
         granular_df = granular_df.dropna(subset=["created_at"])
+        granular_df.set_index("created_at", inplace=True) # FIX 1: Set index for granular data
 
         daily_counts = (
-            granular_df.groupby(granular_df["created_at"].dt.floor("D"))
+            granular_df.groupby(granular_df.index.floor("D"))
             .size()
             .rename("n_tweets")
             .to_frame()
         )
         full_idx = pd.date_range(
-            start=daily_counts.index.min(), end=daily_counts.index.max(), freq="D",
+            start=daily_counts.index.min(),
+            end=daily_counts.index.max(),
+            freq="D",
         )
-        daily_series = daily_counts.reindex(full_idx, fill_value=0)
-        daily_series.index.name = "date"
+        daily_df = daily_counts.reindex(full_idx, fill_value=0)
+        daily_df.index = daily_df.index.tz_convert('UTC') # FIX 2: Ensure daily series is also aware
+        daily_df.index.name = "date"
 
         logger.info(
-            f"Data loaded: {len(granular_df)} tweets, {len(daily_series)} days",
+            f"Data loaded: {len(granular_df)} tweets, {len(daily_df)} days",
         )
 
-        return granular_df, daily_series
+        return granular_df, daily_df
 
     def load_prophet_model(self) -> dict:
         """
         Finds the latest pre-trained Prophet model saved (.pkl) and loads it.
-        Also extracts the backtest MAE from the model's metadata.
         """
         model_files = glob.glob("best_prophet_model_*.pkl")
         if not model_files:
@@ -88,12 +94,6 @@ class DashboardDataLoader:
         latest_model_path = max(model_files, key=os.path.getmtime)
         with open(latest_model_path, "rb") as f:
             model_data = pickle.load(f)
-        
-        # Extract MAE from the metrics dictionary
-        mae = model_data.get("metrics", {}).get("MAE", None)
-        if mae is not None:
-            model_data['mae'] = mae
-            logger.info(f"Backtest MAE found in model file: {mae:.2f}")
 
         logger.info(
             f"Model '{model_data.get('model_name', 'Unknown')}' loaded from '{os.path.basename(latest_model_path)}'.",
@@ -102,20 +102,25 @@ class DashboardDataLoader:
 
     def load_risk_parameters(self) -> dict:
         """
-        Loads the optimal risk parameters (alpha and kelly_fraction) from 'risk_params.pkl'.
+        Loads the optimal risk parameters (alpha, kelly_fraction, mae) from 'risk_params.pkl'.
         """
         try:
             with open("risk_params.pkl", "rb") as f:
                 risk_params = pickle.load(f)
-            logger.info(
-                f"Risk parameters loaded. Alpha: {risk_params['alpha']:.4f}, Kelly: {risk_params['kelly']:.2f}.",
+
+            mae = risk_params.get("mae", None)
+            log_message = (
+                f"Risk parameters loaded. Alpha: {risk_params['alpha']:.4f}, "
+                f"Kelly: {risk_params['kelly']:.2f}, "
+                f"MAE: {f'{mae:.2f}' if mae is not None else 'N/A'}."
             )
+            logger.info(log_message)
             return risk_params
         except FileNotFoundError:
             logger.warning(
-                "`risk_params.pkl` not found. Using default values (alpha=0.2, kelly=0.1). Run `financial_optimizer.py`.",
+                "`risk_params.pkl` not found. Using default values. Run `financial_optimizer.py`.",
             )
-            return {"alpha": 0.2, "kelly": 0.1}
+            return {"alpha": 0.2, "kelly": 0.1, "mae": None}
 
     def fetch_market_data(self) -> dict:
         """
@@ -137,7 +142,8 @@ class DashboardDataLoader:
             raise ValueError("Could not extract dates from the market description.")
 
         updated_bins = self.poly_feed.fetch_market_ids_automatically(
-            keywords=self.market_keywords, bins_dict=MARKET_BINS,
+            keywords=self.market_keywords,
+            bins_dict=MARKET_BINS,
         )
         market_snapshot = self.poly_feed.get_all_bins_prices(updated_bins)
 

@@ -20,7 +20,9 @@ except (ImportError, ModuleNotFoundError):
 
 # --- Configuración de la Página ---
 st.set_page_config(
-    page_title="Elon Quant Dashboard", layout="wide", initial_sidebar_state="collapsed",
+    page_title="Elon Quant Dashboard",
+    layout="wide",
+    initial_sidebar_state="collapsed",
 )
 
 
@@ -39,7 +41,9 @@ def get_daily_series(df_tweets):
     df["date"] = df["created_at"].dt.floor("D")
     daily_counts = df.groupby("date").size().rename("n_tweets").to_frame()
     full_idx = pd.date_range(
-        start=daily_counts.index.min(), end=daily_counts.index.max(), freq="D",
+        start=daily_counts.index.min(),
+        end=daily_counts.index.max(),
+        freq="D",
     )
     return daily_counts.reindex(full_idx, fill_value=0)
 
@@ -145,12 +149,14 @@ try:
 
     # Barras de Tweets
     bars = base.mark_bar(opacity=0.5, color="#1DA1F2").encode(
-        y=alt.Y("Tweets:Q"), tooltip=["Fecha", "Tweets"],
+        y=alt.Y("Tweets:Q"),
+        tooltip=["Fecha", "Tweets"],
     )
 
     # Línea de Media
     line_mean = base.mark_line(color="black", strokeDash=[5, 5]).encode(
-        y="Media:Q", tooltip=[alt.Tooltip("Media", format=".1f", title="Media 7d")],
+        y="Media:Q",
+        tooltip=[alt.Tooltip("Media", format=".1f", title="Media 7d")],
     )
 
     # Área de Desviación (Banda)
@@ -164,7 +170,8 @@ try:
     )
 
     chart = (band + bars + line_mean + outliers).properties(
-        height=400, title="Volumen vs Media Móvil 7d (Puntos Rojos = Outliers > 1 Std)",
+        height=400,
+        title="Volumen vs Media Móvil 7d (Puntos Rojos = Outliers > 1 Std)",
     )
 
     st.altair_chart(chart, use_container_width=True)

@@ -63,7 +63,8 @@ class PolymarketFeed:
         next_cursor = ""
         while True:
             markets_resp = self._robust_api_call(
-                self.client.get_markets, next_cursor=next_cursor,
+                self.client.get_markets,
+                next_cursor=next_cursor,
             )
             if not markets_resp or not markets_resp.get("data"):
                 break
@@ -74,16 +75,19 @@ class PolymarketFeed:
                     "active",
                 ):
                     match = re.search(
-                        r"([\d,]+-[\d,]+|[\d,]+\+)", market.get("question", ""),
+                        r"([\d,]+-[\d,]+|[\d,]+\+)",
+                        market.get("question", ""),
                     )
                     if match:
                         bin_label = match.group(1)
                         tokens = market.get("tokens", [])
                         yes_token = next(
-                            (t for t in tokens if t.get("outcome") == "Yes"), None,
+                            (t for t in tokens if t.get("outcome") == "Yes"),
+                            None,
                         )
                         no_token = next(
-                            (t for t in tokens if t.get("outcome") == "No"), None,
+                            (t for t in tokens if t.get("outcome") == "No"),
+                            None,
                         )
 
                         if yes_token and no_token and bin_label in bins_dict:
@@ -113,7 +117,10 @@ class PolymarketFeed:
         return bins_dict
 
     def get_market_valuation(
-        self, yes_token_id: str, no_token_id: str, entry_price_fallback=0.0,
+        self,
+        yes_token_id: str,
+        no_token_id: str,
+        entry_price_fallback=0.0,
     ) -> dict:
         if not self.valid:
             return {"mid_price": entry_price_fallback, "status": "CLIENT_ERR"}
@@ -162,7 +169,8 @@ class PolymarketFeed:
         for bin_label, bin_data in bins_dict.items():
             if bin_data.get("id_yes") and bin_data.get("id_no"):
                 valuation = self.get_market_valuation(
-                    bin_data["id_yes"], bin_data["id_no"],
+                    bin_data["id_yes"],
+                    bin_data["id_no"],
                 )
                 snapshot[bin_label] = valuation
         return snapshot
@@ -170,27 +178,48 @@ class PolymarketFeed:
     def get_market_details(self, keywords: list) -> dict | None:
         if not self.valid:
             return None
+        logger.info(f"Searching for market with keywords: {keywords}")
         next_cursor = ""
+        markets_scanned = 0
         while True:
-            markets_resp = self._robust_api_call(
-                self.client.get_markets, next_cursor=next_cursor,
-            )
+            # Bypass the client library and use httpx directly to debug the 500 error
+            def api_func():
+                markets_url = f"{self.client.host}/markets"
+                params = {}
+                if next_cursor:
+                    params["next_cursor"] = next_cursor
+                
+                # Using a standard httpx client for the request
+                with httpx.Client() as client:
+                    response = client.get(markets_url, params=params)
+                    response.raise_for_status()
+                    return response.json()
+
+            markets_resp = self._robust_api_call(api_func)
+
             if not markets_resp or not markets_resp.get("data"):
                 break
             for market in markets_resp.get("data", []):
+                markets_scanned += 1
                 question = market.get("question", "").lower()
+                is_active = market.get("active") is True
+
                 if (
                     all(keyword.lower() in question for keyword in keywords)
-                    and market.get("active") is True
+                    and is_active
                 ):
+                    logger.success(f"Found matching market: {question}")
                     return market
             next_cursor = markets_resp.get("next_cursor")
             if not next_cursor or next_cursor == "LTE=":
                 break
+        
+        logger.warning(f"Scan complete. Scanned {markets_scanned} markets, but no active market matched all keywords.")
         return None
 
     def get_market_dates(
-        self, market_description: str,
+        self,
+        market_description: str,
     ) -> tuple[pd.Timestamp, pd.Timestamp] | tuple[None, None]:
         """
         Parses the market start and end dates from the description text robustly.
@@ -246,7 +275,9 @@ class PolymarketFeed:
             logger.error(f"Error parsing market dates: {e}")
             return None, None
 
-    def get_price_history(self, market_id: str, fidelity: int = 15, start_timestamp: int = 1577836800) -> list | None: # Default to Jan 1, 2020 00:00:00 UTC
+    def get_price_history(
+        self, market_id: str, fidelity: int = 15, start_timestamp: int = 1577836800
+    ) -> list | None:  # Default to Jan 1, 2020 00:00:00 UTC
         """
         Fetches the historical price data for a specific market.
 
@@ -262,7 +293,9 @@ class PolymarketFeed:
             logger.error("ClobClient is not valid. Cannot fetch price history.")
             return None
 
-        logger.info(f"Fetching price history for Market ID: {market_id}, from {datetime.fromtimestamp(start_timestamp)} UTC...")
+        logger.info(
+            f"Fetching price history for Market ID: {market_id}, from {datetime.fromtimestamp(start_timestamp)} UTC..."
+        )
 
         # Use httpx directly for this endpoint, as ClobClient doesn't have a direct method.
         # Wrap httpx.get in a lambda so it can be passed to _robust_api_call.
@@ -273,19 +306,23 @@ class PolymarketFeed:
                 params={
                     "market": market_id,
                     "fidelity": fidelity,
-                    "startTs": start_timestamp # Include the start timestamp
-                }
+                    "startTs": start_timestamp,  # Include the start timestamp
+                },
             )
-            response.raise_for_status() # Raise an exception for bad status codes
+            response.raise_for_status()  # Raise an exception for bad status codes
             return response.json()
 
         response_data = self._robust_api_call(api_func)
 
         if response_data and "history" in response_data:
-            logger.success(f"Successfully fetched {len(response_data['history'])} data points for market {market_id}.")
+            logger.success(
+                f"Successfully fetched {len(response_data['history'])} data points for market {market_id}."
+            )
             return response_data["history"]
         elif response_data:
-            logger.warning(f"Price history response for market {market_id} did not contain a 'history' key. Response: {response_data}")
+            logger.warning(
+                f"Price history response for market {market_id} did not contain a 'history' key. Response: {response_data}"
+            )
             return None
         else:
             logger.error(f"Failed to fetch price history for market {market_id}.")

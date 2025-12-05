@@ -17,7 +17,10 @@ def load_unified_data():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(os.path.dirname(script_dir))
     processed_data_path = os.path.join(
-        project_root, "data", "processed", "merged_elon_tweets.csv",
+        project_root,
+        "data",
+        "processed",
+        "merged_elon_tweets.csv",
     )
 
     logger.info(f"Attempting to load pre-processed data from: {processed_data_path}")
@@ -39,7 +42,10 @@ def load_unified_data():
         # format='mixed' permite que convivan fechas estilo "2025-11-27 20:00:00" (Histórico)
         # con fechas estilo "2025-12-03T15:00:00" (API nueva) sin generar NaT.
         df["created_at"] = pd.to_datetime(
-            df["created_at"], errors="coerce", utc=True, format="mixed",
+            df["created_at"],
+            errors="coerce",
+            utc=True,
+            format="mixed",
         )
 
         # 3. Limpieza

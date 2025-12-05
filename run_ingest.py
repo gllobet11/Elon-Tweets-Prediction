@@ -91,7 +91,8 @@ def run_data_ingestion():
 
     ingestor = ApiIngestor()
     df_new = ingestor.fetch(
-        start_date=last_hist_date, end_date=datetime.now(timezone.utc),
+        start_date=last_hist_date,
+        end_date=datetime.now(timezone.utc),
     )
 
     if df_new.empty:
@@ -110,7 +111,9 @@ def run_data_ingestion():
     # --- Data Cleaning on the unified frame ---
     # Ensure all dates are consistent timezone-aware objects
     df_unified["created_at"] = pd.to_datetime(
-        df_unified["created_at"], utc=True, errors="coerce",
+        df_unified["created_at"],
+        utc=True,
+        errors="coerce",
     )
     df_unified["id"] = pd.to_numeric(df_unified["id"], errors="coerce")
     df_unified.dropna(subset=["id", "created_at"], inplace=True)

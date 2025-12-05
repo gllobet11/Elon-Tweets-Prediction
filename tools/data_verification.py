@@ -3,6 +3,7 @@ import os
 import sys
 import traceback
 import pandas as pd
+import yfinance as yf
 
 # Path Configuration
 try:
@@ -237,7 +238,8 @@ def verify_poly_feed():
         # 2. Get all markets
         print("\n🔎 Fetching the list of active markets from Polymarket...")
         markets_resp = poly_feed._robust_api_call(
-            poly_feed.client.get_markets, next_cursor="",
+            poly_feed.client.get_markets,
+            next_cursor="",
         )
 
         if not markets_resp or not markets_resp.get("data"):

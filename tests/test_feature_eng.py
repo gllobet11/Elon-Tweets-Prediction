@@ -141,7 +141,8 @@ def test_process_data_feature_values(feature_engineer_instance, sample_raw_data)
             ].mean()
             expected_momentum = roll_mean_3 - roll_mean_7
             assert np.isclose(
-                processed_df.loc[test_date_momentum, "momentum"], expected_momentum,
+                processed_df.loc[test_date_momentum, "momentum"],
+                expected_momentum,
             )
 
 
@@ -151,10 +152,13 @@ def test_add_regime_feature_values(feature_engineer_instance):
     """
     # Create a daily series with a clear spike and a clear drop
     dates = pd.date_range(
-        start="2025-01-01", periods=200, freq="D",
+        start="2025-01-01",
+        periods=200,
+        freq="D",
     )  # Aumentar duración para ventana móvil
     n_tweets = np.full(
-        len(dates), 50,
+        len(dates),
+        50,
     )  # Base level (increased from 10 to 50 for a more stable Z-score)
     n_tweets[40:45] = 500  # Introduce a very high spike
     n_tweets[80:85] = 0  # Introduce a very low drop
