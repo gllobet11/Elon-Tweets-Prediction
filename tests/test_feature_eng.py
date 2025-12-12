@@ -28,7 +28,9 @@ def sample_raw_data():
             + ["2025-01-05 12:00:00"] * 5
             + ["2025-01-06 12:00:00"] * 5
             + ["2025-01-07 12:00:00"] * 2,
-        ).tolist()[:70],  # Asegurar 70 fechas para 70 filas
+        ).tolist()[
+            :70
+        ],  # Asegurar 70 fechas para 70 filas
     }
     df = pd.DataFrame(data)
     # Ensure timezone-naive for consistency with FeatureEngineer
@@ -87,9 +89,9 @@ def test_process_data_output_columns(feature_engineer_instance, sample_raw_data)
     # Check for NaNs in critical output columns (after fillna/dropna logic)
     # The first few rows will naturally have NaNs due to rolling/shifting,
     # but after dropna(subset=['roll_sum_14']), there should be no more NaNs in output.
-    assert not processed_df[expected_columns].isnull().any().any(), (
-        "Should not have NaNs in final processed features"
-    )
+    assert (
+        not processed_df[expected_columns].isnull().any().any()
+    ), "Should not have NaNs in final processed features"
 
 
 def test_process_data_feature_values(feature_engineer_instance, sample_raw_data):
@@ -130,12 +132,14 @@ def test_process_data_feature_values(feature_engineer_instance, sample_raw_data)
         # Ensure enough preceding data for rolling means
         if test_date_momentum - timedelta(days=7) in processed_df.index:
             roll_mean_3 = processed_df.loc[
-                test_date_momentum - timedelta(days=3) : test_date_momentum
+                test_date_momentum
+                - timedelta(days=3) : test_date_momentum
                 - timedelta(days=1),
                 "n_tweets",
             ].mean()
             roll_mean_7 = processed_df.loc[
-                test_date_momentum - timedelta(days=7) : test_date_momentum
+                test_date_momentum
+                - timedelta(days=7) : test_date_momentum
                 - timedelta(days=1),
                 "n_tweets",
             ].mean()
@@ -178,15 +182,15 @@ def test_add_regime_feature_values(feature_engineer_instance):
     ).normalize()  # A date *within* the spike
     if spike_check_date in processed_df.index:
         # Assert that the Z-score (regime_intensity) is significantly positive
-        assert processed_df.loc[spike_check_date, "regime_intensity"] > 2.0, (
-            f"Regime intensity not high enough at {spike_check_date}"
-        )
-        assert processed_df.loc[spike_check_date, "is_high_regime"] == 1, (
-            f"is_high_regime not set at {spike_check_date}"
-        )
-        assert processed_df.loc[spike_check_date, "is_regime_change"] == 1, (
-            f"is_regime_change not set at {spike_check_date}"
-        )
+        assert (
+            processed_df.loc[spike_check_date, "regime_intensity"] > 2.0
+        ), f"Regime intensity not high enough at {spike_check_date}"
+        assert (
+            processed_df.loc[spike_check_date, "is_high_regime"] == 1
+        ), f"is_high_regime not set at {spike_check_date}"
+        assert (
+            processed_df.loc[spike_check_date, "is_regime_change"] == 1
+        ), f"is_regime_change not set at {spike_check_date}"
     else:
         pytest.fail(f"Spike check date {spike_check_date} not in processed_df index.")
 
@@ -197,15 +201,15 @@ def test_add_regime_feature_values(feature_engineer_instance):
     ).normalize()  # A date *within* the drop
     if drop_check_date in processed_df.index:
         # Assert that the Z-score (regime_intensity) is significantly negative
-        assert processed_df.loc[drop_check_date, "regime_intensity"] < -2.0, (
-            f"Regime intensity not low enough at {drop_check_date}"
-        )
-        assert processed_df.loc[drop_check_date, "is_low_regime"] == 1, (
-            f"is_low_regime not set at {drop_check_date}"
-        )
-        assert processed_df.loc[drop_check_date, "is_regime_change"] == 1, (
-            f"is_regime_change not set at {drop_check_date}"
-        )
+        assert (
+            processed_df.loc[drop_check_date, "regime_intensity"] < -2.0
+        ), f"Regime intensity not low enough at {drop_check_date}"
+        assert (
+            processed_df.loc[drop_check_date, "is_low_regime"] == 1
+        ), f"is_low_regime not set at {drop_check_date}"
+        assert (
+            processed_df.loc[drop_check_date, "is_regime_change"] == 1
+        ), f"is_regime_change not set at {drop_check_date}"
     else:
         pytest.fail(f"Drop check date {drop_check_date} not in processed_df index.")
 
@@ -233,9 +237,9 @@ def test_get_latest_features(feature_engineer_instance, sample_raw_data):
     # Note: If the model starts using the new regime features, this list will need updating.
     model_required_features = ["lag_1", "last_burst"]
     assert latest_features_df.shape[0] == 1, "Should return exactly one row"
-    assert list(latest_features_df.columns) == model_required_features, (
-        "Should return only model required features"
-    )
-    assert not latest_features_df.isnull().any().any(), (
-        "Should not have NaNs in latest features"
-    )
+    assert (
+        list(latest_features_df.columns) == model_required_features
+    ), "Should return only model required features"
+    assert (
+        not latest_features_df.isnull().any().any()
+    ), "Should not have NaNs in latest features"

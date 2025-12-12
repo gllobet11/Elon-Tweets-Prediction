@@ -2,144 +2,194 @@ import os
 import json
 import numpy as np
 import pandas as pd
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-from datetime import datetime, timedelta, timezone
 import yfinance as yf
 from arch import arch_model
 from loguru import logger
-from transformers import pipeline
-import streamlit as st # Necesario para st.cache_resource
+from datetime import datetime, timedelta
 
-def get_spacex_launches_2025():
-    """
-    Generates a synthetic, realistic SpaceX launch schedule for 2025.
-    """
+from google.cloud import bigquery
+
+client = bigquery.Client()
+
+# --- PATH CONFIGURATION ---
+# Usamos os.getcwd() para asegurar rutas absolutas desde la raíz del proyecto
+PROJECT_ROOT = os.getcwd()
+
+SPACEX_LAUNCHES_PATH = os.path.join(PROJECT_ROOT, "data", "processed", "spacex_launches.csv")
+ELON_NEWS_PATH = os.path.join(PROJECT_ROOT, "data", "processed", "elon_news_cleaned.csv")
+# Apuntamos al nuevo archivo diario generado
+POLY_FEATURES_PATH = os.path.join(PROJECT_ROOT, "data", "eda", "poly_daily_features.csv")
+
+# --- DATA LOADING FUNCTIONS ---
+
+def load_spacex_launches_from_csv():
+    if not os.path.exists(SPACEX_LAUNCHES_PATH):
+        return pd.DatetimeIndex([])
     try:
-        url = "https://api.spacexdata.com/v4/launches/past"
-        
-        # --- Robust Request with Retries and Timeout ---
-        session = requests.Session()
-        retry_strategy = Retry(
-            total=5, # Number of retries
-            backoff_factor=1, # Wait 1, 2, 4, 8, 16 seconds between retries
-            status_forcelist=[429, 500, 502, 503, 504], # Retry on these status codes
-            allowed_methods=["HEAD", "GET", "OPTIONS"]
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        session.mount("https://", adapter)
-        session.mount("http://", adapter)
-
-        response = session.get(url, timeout=10) # Set a timeout of 10 seconds
-        response.raise_for_status()
-        launches = response.json()
-
-        # Corrección: datetime.utcfromtimestamp está deprecado. Usamos timezone.utc
-        launch_dates_hist = sorted(
-            [
-                datetime.fromtimestamp(l["date_unix"], tz=timezone.utc)
-                for l in launches
-                if l.get("date_unix")
-                and datetime.fromtimestamp(l["date_unix"], tz=timezone.utc).year >= 2022
-            ]
-        )
-
-        if len(launch_dates_hist) < 2:
-            raise ValueError("Not enough historical launches to determine frequency.")
-
-        time_deltas = pd.Series(launch_dates_hist).diff().dt.total_seconds() / (24 * 3600)
-        avg_days_between_launches = time_deltas.mean()
-
-        if pd.isna(avg_days_between_launches) or avg_days_between_launches <= 0:
-            avg_days_between_launches = 4
-
-        logger.info(f"Historical analysis: Average days between launches is {avg_days_between_launches:.2f} days.")
-
-        synthetic_dates = []
-        current_date = datetime(2025, 1, 1)
-        while current_date.year == 2025:
-            synthetic_dates.append(current_date)
-            current_date += timedelta(days=round(avg_days_between_launches))
-
-        return pd.to_datetime(synthetic_dates, utc=True)
-
+        df_launches = pd.read_csv(SPACEX_LAUNCHES_PATH)
+        launch_dates = pd.to_datetime(df_launches["launch_date"], utc=True)
+        return pd.DatetimeIndex(launch_dates.unique()).sort_values()
     except Exception as e:
-        logger.error(f"Error generating synthetic launch dates: {e}. Using a fixed fallback.")
-        fallback_dates = pd.date_range(start="2025-01-01", end="2025-12-31", freq="4D", tz="UTC")
-        return pd.to_datetime(fallback_dates, utc=True)
+        logger.error(f"Error loading SpaceX data: {e}")
+        return pd.DatetimeIndex([])
 
 
-def calculate_launch_proximity(dates_series, launch_dates):
+def load_elon_news_data():
+    if not os.path.exists(ELON_NEWS_PATH):
+        return pd.DataFrame()
+    try:
+        df_news = pd.read_csv(ELON_NEWS_PATH)
+        df_news["date"] = pd.to_datetime(df_news["date"], utc=True)
+        return df_news.set_index("date")
+    except Exception as e:
+        logger.error(f"Error loading News data: {e}")
+        return pd.DataFrame()
+
+
+def load_polymarket_features():
     """
-    Calculates the minimum number of days to the nearest SpaceX launch.
+    Carga los features DIARIOS de Polymarket generados por tools/generate_daily_poly.py
+    """
+    if not os.path.exists(POLY_FEATURES_PATH):
+        logger.warning(f"⚠️ Polymarket file not found at {POLY_FEATURES_PATH}. Features will be 0.")
+        return pd.DataFrame()
+    try:
+        df_poly = pd.read_csv(POLY_FEATURES_PATH, index_col=0)
+        df_poly.index = pd.to_datetime(df_poly.index, utc=True)
+        return df_poly
+    except Exception as e:
+        logger.error(f"Error loading Polymarket data: {e}")
+        return pd.DataFrame()
+
+
+def calculate_spacex_features_vectorized(target_dates, launch_dates, future_days=7):
+    """
+    Calcula proximidad usando merge_asof (Vectorizado y rápido).
     """
     if launch_dates.empty:
-        return pd.Series(14, index=dates_series, dtype=int)
+        return pd.Series(14, index=target_dates), pd.Series(0, index=target_dates)
 
-    if not isinstance(dates_series, pd.DatetimeIndex):
-        dates_series = pd.to_datetime(dates_series)
+    # Preparar Targets
+    targets = pd.DataFrame({"date": target_dates}).sort_values("date")
+    if targets["date"].dt.tz is None:
+        targets["date"] = targets["date"].dt.tz_localize("UTC")
 
-    if dates_series.tz is None:
-        dates_series = dates_series.tz_localize("UTC")
-    if launch_dates.tz is None:
-        launch_dates = launch_dates.tz_localize("UTC")
+    # Preparar Launches
+    launches = pd.DataFrame({"launch_date": launch_dates}).sort_values("launch_date")
+    if launches["launch_date"].dt.tz is None:
+        launches["launch_date"] = launches["launch_date"].dt.tz_localize("UTC")
 
-    min_days_to_launch = dates_series.to_series().apply(
-        lambda x: min(abs((x - ld).days) for ld in launch_dates)
-        if not launch_dates.empty
-        else 14
+    # Proximidad (Días hasta el SIGUIENTE lanzamiento)
+    merged = pd.merge_asof(
+        targets, launches, left_on="date", right_on="launch_date", direction="forward"
     )
 
-    return min_days_to_launch.clip(upper=14)
+    days_to_launch = (merged["launch_date"] - merged["date"]).dt.days
+    proximity_series = days_to_launch.fillna(14).clip(upper=14).astype(int)
+    proximity_series.index = targets["date"]
+
+    # Conteo Futuro
+    target_vals = targets["date"].values
+    launch_vals = launches["launch_date"].values
+    idx_start = np.searchsorted(launch_vals, target_vals, side="right")
+    target_plus_window = target_vals + np.timedelta64(future_days, "D")
+    idx_end = np.searchsorted(launch_vals, target_plus_window, side="right")
+
+    count_series = pd.Series(idx_end - idx_start, index=targets["date"])
+
+    return proximity_series.reindex(target_dates), count_series.reindex(target_dates)
 
 
-def calculate_tesla_garch_volatility(start_date: str, end_date: str) -> pd.Series:
+def fetch_gdelt_data():
     """
-    Calculates the conditional volatility of TSLA stock price using a GARCH(1,1) model.
+    Fetches daily Elon Musk related news data (Volume and Sentiment) from GDELT.
     """
+    logger.info("📡 Executing BigQuery query for GDELT news data...")
+
     try:
-        logger.info(f"Fetching TSLA historical data from {start_date} to {end_date}...")
-        tsla_data = yf.download("TSLA", start=start_date, end=end_date, progress=False)
+        from google.auth import default as get_default_credentials
+        try:
+            credentials, project = get_default_credentials()
+        except Exception as e:
+            pass
 
-        # Manejo seguro si yfinance devuelve MultiIndex
+        query = """
+        SELECT
+        PARSE_DATE('%Y%m%d', SUBSTR(CAST(DATE AS STRING), 1, 8)) AS date,
+        COUNT(*) AS news_volume,
+        AVG(SAFE_CAST(SPLIT(V2Tone, ',')[OFFSET(0)] AS FLOAT64)) AS avg_sentiment
+        FROM `gdelt-bq.gdeltv2.gkg`
+        WHERE
+        PARSE_DATE('%Y%m%d', SUBSTR(CAST(DATE AS STRING), 1, 8))
+            >= DATE_SUB(CURRENT_DATE(), INTERVAL 2 YEAR)
+        AND V2Persons LIKE '%Elon Musk%'
+        GROUP BY date
+        ORDER BY date ASC;
+        """
+        query_job = client.query(query)
+        df = query_job.to_dataframe()
+
+        df["date"] = pd.to_datetime(df["date"])
+        df.to_csv(ELON_NEWS_PATH, index=False)
+        logger.success(
+            f"✅ GDELT news data saved to '{os.path.basename(ELON_NEWS_PATH)}' ({len(df)} days)."
+        )
+        return df
+
+    except Exception as e:
+        logger.error(f"❌ BigQuery/GDELT API Error: {e}. News features will be zero.")
+        return pd.DataFrame(columns=["date", "news_volume", "avg_sentiment"])
+
+
+def fetch_tesla_market_data(start_date: str, end_date: str) -> pd.DataFrame:
+    try:
+        tsla_data = yf.download(
+            "TSLA", start=start_date, end=end_date, progress=False, auto_adjust=False
+        )
+
         if isinstance(tsla_data.columns, pd.MultiIndex):
             try:
-                close_data = tsla_data.xs('Close', level=0, axis=1) 
-                if close_data.empty: 
-                     close_data = tsla_data["Close"]
+                close_data = tsla_data.xs("Close", level=0, axis=1)
             except:
                 close_data = tsla_data.iloc[:, 0]
         else:
-             close_data = tsla_data["Close"] if "Close" in tsla_data.columns else tsla_data.iloc[:, 0]
+            close_data = (
+                tsla_data["Close"]
+                if "Close" in tsla_data.columns
+                else tsla_data.iloc[:, 0]
+            )
+
+        if isinstance(close_data, pd.DataFrame):
+            close_data = close_data.iloc[:, 0]
 
         returns = close_data.pct_change().dropna()
-
         if returns.empty:
-            logger.warning("No returns to calculate. Returning empty series.")
-            return pd.Series(dtype=float)
+            return pd.DataFrame()
 
-        garch_model = arch_model(100 * returns, vol="Garch", p=1, q=1, mean="Constant", dist="t")
+        garch_model = arch_model(
+            100 * returns, vol="Garch", p=1, q=1, mean="Constant", dist="t"
+        )
         res = garch_model.fit(update_freq=5, disp="off")
-        
-        conditional_volatility = res.conditional_volatility
 
-        # --- CORRECCIÓN DE ZONA HORARIA ---
-        # Convertimos todo a UTC explícito para que coincida con los tweets
-        if conditional_volatility.index.tz is None:
-            conditional_volatility.index = conditional_volatility.index.tz_localize('UTC')
+        df_result = pd.DataFrame(index=returns.index)
+        df_result["tsla_returns"] = returns
+        df_result["tsla_volatility"] = res.conditional_volatility
+
+        if df_result.index.tz is None:
+            df_result.index = df_result.index.tz_localize("UTC")
         else:
-            conditional_volatility.index = conditional_volatility.index.tz_convert('UTC')
+            df_result.index = df_result.index.tz_convert("UTC")
 
-        # El índice completo también debe ser UTC
-        full_idx = pd.date_range(start=returns.index.min(), end=returns.index.max(), freq="D", tz='UTC')
-        daily_volatility = conditional_volatility.reindex(full_idx, method="ffill")
+        full_idx = pd.date_range(start=start_date, end=end_date, freq="D", tz="UTC")
+        df_result = df_result.reindex(full_idx)
+        df_result["tsla_volatility"] = df_result["tsla_volatility"].ffill()
+        df_result["tsla_returns"] = df_result["tsla_returns"].fillna(0)
 
-        return daily_volatility
+        return df_result
 
     except Exception as e:
-        logger.error(f"Error calculating TSLA GARCH volatility: {e}")
-        return pd.Series(dtype=float)
+        logger.error(f"Error fetching Tesla data: {e}")
+        return pd.DataFrame()
 
 
 class FeatureEngineer:
@@ -148,127 +198,221 @@ class FeatureEngineer:
         self.regime_threshold_z_score = 1.0
 
     def _resample_to_daily(self, df_granular: pd.DataFrame) -> pd.DataFrame:
-        """Resamples granular tweet data to a daily DataFrame with a 'n_tweets' column."""
         df_copy = df_granular.copy()
-
-        # Handle case where 'created_at' is already the index, or is a column
-        if not isinstance(df_copy.index, pd.DatetimeIndex) and 'created_at' not in df_copy.columns:
-             raise ValueError("Input for resampling must have 'created_at' column or a DatetimeIndex.")
-        
-        if 'created_at' in df_copy.columns:
+        if "created_at" in df_copy.columns:
             df_copy["created_at"] = pd.to_datetime(df_copy["created_at"], utc=True)
             df_copy = df_copy.set_index("created_at")
-        
-        # By now, we can assume the index is a DatetimeIndex
+
         df_daily = df_copy.resample("D").size().to_frame("n_tweets")
-        
         if not df_daily.empty:
-            all_days = pd.date_range(start=df_daily.index.min(), end=df_daily.index.max(), freq='D')
+            # Reindex to ensure all days are present, using the timezone from the resampled data
+            all_days = pd.date_range(
+                start=df_daily.index.min(), end=df_daily.index.max(), freq="D", tz=df_daily.index.tz
+            )
             df_daily = df_daily.reindex(all_days, fill_value=0)
-        
         return df_daily
 
     def _calculate_regime_change(self, daily_series):
         if daily_series.empty:
-            return pd.Series(0, index=daily_series.index), pd.Series(0, index=daily_series.index), pd.Series(0, index=daily_series.index), pd.Series(0, index=daily_series.index)
+            return pd.Series(0), pd.Series(0), pd.Series(0), pd.Series(0)
 
-        rolling_mean = daily_series.rolling(window=self.rolling_window_size, min_periods=1).mean()
-        rolling_std = daily_series.rolling(window=self.rolling_window_size, min_periods=1).std()
+        rolling_mean = daily_series.rolling(
+            window=self.rolling_window_size, min_periods=1
+        ).mean()
+        rolling_std = daily_series.rolling(
+            window=self.rolling_window_size, min_periods=1
+        ).std()
 
-        safe_rolling_std = rolling_std.replace(0, pd.NA)
-        z_score = (daily_series - rolling_mean) / safe_rolling_std
-        z_score = z_score.fillna(0)
+        z_score = (
+            (daily_series - rolling_mean) / rolling_std.replace(0, pd.NA)
+        ).fillna(0)
 
-        is_high_regime = (z_score > self.regime_threshold_z_score).astype(int)
-        is_low_regime = (z_score < -self.regime_threshold_z_score).astype(int)
+        high = (z_score > self.regime_threshold_z_score).astype(int)
+        low = (z_score < -self.regime_threshold_z_score).astype(int)
+        change = ((high.diff().abs() > 0) | (low.diff().abs() > 0)).astype(int)
+        change.iloc[0] = 0
+        return z_score, high, low, change
 
-        is_regime_change = ((is_high_regime.diff().abs() > 0) | (is_low_regime.diff().abs() > 0)).astype(int)
-        is_regime_change.iloc[0] = 0
+    def _add_event_features(self, df):
+        # 1. BASE: Lagged Tweets
+        lag_1 = df["n_tweets"].shift(1).fillna(0)
+        df["lag_1"] = lag_1
+        df["roll_sum_7"] = lag_1.rolling(7).sum().fillna(0)
+        df["momentum"] = lag_1.diff(7).fillna(0)
 
-        return z_score, is_high_regime, is_low_regime, is_regime_change
+        roll_mean_7 = lag_1.rolling(7).mean()
+        roll_mean_30 = lag_1.rolling(30).mean()
 
-    def _add_technical_features(self, df):
-        df["lag_1"] = df["n_tweets"].shift(1)
-        df["roll_sum_3"] = df["n_tweets"].rolling(window=3).sum()
-        df["roll_sum_7"] = df["n_tweets"].rolling(window=7).sum()
-        df["momentum"] = df["n_tweets"].diff(periods=7)
+        df["last_burst"] = (lag_1 > (roll_mean_7 * 1.5)).astype(int)
+        df["overheat_ratio"] = (roll_mean_7 / (roll_mean_30 + 1)).fillna(1.0)
+        df["is_overheated"] = (df["overheat_ratio"] > 1.5).astype(int)
 
-        roll_mean_7 = df["n_tweets"].rolling(window=7).mean().shift(1)
-        df["last_burst"] = (df["n_tweets"] > (roll_mean_7 * 1.5)).astype(int)
+        # 3. SPACEX
+        if "spacex_launch_proximity" in df.columns:
+            df["event_spacex_hype"] = (df["spacex_launch_proximity"] <= 1).astype(int)
+            df["event_spacex_t_minus_1"] = (df["spacex_launch_proximity"] == 1).astype(int)
+        else:
+            df["event_spacex_hype"] = 0
+            df["event_spacex_t_minus_1"] = 0
 
-        df["dow"] = df.index.dayofweek
-        df["is_weekend"] = ((df.index.dayofweek == 5) | (df.index.dayofweek == 6)).astype(int)
+        # 4. TESLA
+        if "tsla_returns" in df.columns:
+            tsla_lag = df["tsla_returns"].shift(1).fillna(0)
+            df["event_tsla_pump"] = (tsla_lag > 0.04).astype(int)
+            df["event_tsla_crash"] = (tsla_lag < -0.04).astype(int)
+            
+            if "tsla_volatility" in df.columns:
+                 # Si la volatilidad es 20% mayor a la media del mes
+                 df["event_high_volatility"] = (df["tsla_volatility"] > df["tsla_volatility"].rolling(30).mean() * 1.2).astype(int)
+            else:
+                 df["event_high_volatility"] = 0
+        else:
+            df["event_tsla_pump"] = 0
+            df["event_tsla_crash"] = 0
+            df["event_high_volatility"] = 0
 
-        roll_std_7 = df["n_tweets"].rolling(window=7).std().shift(1)
-        df["cv_7"] = roll_std_7 / roll_mean_7
-        df["cv_7"] = df["cv_7"].fillna(0)
-        
-        return df
+        # 5. NEWS
+        df["event_viral_news"] = 0
+        df["news_momentum"] = 0
+        df["event_negative_news_spike"] = 0
+
+        if "news_vol_log" in df.columns:
+            news_vol_lag = df["news_vol_log"].shift(1).fillna(0)
+            df["news_momentum"] = news_vol_lag
+            df["event_viral_news"] = (news_vol_lag > 7.5).astype(int)
+
+            if "avg_sentiment" in df.columns:
+                sentiment_lag = df["avg_sentiment"].shift(1).fillna(0)
+                is_loud = news_vol_lag > 7.0
+                is_bad = sentiment_lag < -0.2
+                df["event_negative_news_spike"] = (is_loud & is_bad).astype(int)
+
+        # 6. CALENDAR
+        df["is_weekend"] = df.index.dayofweek.isin([5, 6]).astype(int)
+        df["is_sunday"] = (df.index.dayofweek == 6).astype(int)
+
+        return df.fillna(0)
 
     def process_data(self, df_raw):
+        # 1. CARGA INICIAL Y LIMPIEZA
         if df_raw.empty:
             return pd.DataFrame()
-        
-        # Check if df_raw is already a daily, processed-like DataFrame
-        # by checking if it has 'n_tweets' and a DatetimeIndex
-        if isinstance(df_raw.index, pd.DatetimeIndex) and 'n_tweets' in df_raw.columns:
+
+        if isinstance(df_raw.index, pd.DatetimeIndex) and "n_tweets" in df_raw.columns:
             df = df_raw.copy()
         else:
-            # Assume it's raw granular data and resample
             df = self._resample_to_daily(df_raw)
-        
-        df = df.copy().sort_index()
 
-        df = self._add_technical_features(df)
-        
-        z, high, low, change = self._calculate_regime_change(df['n_tweets'])
-        df['is_high_regime'] = high
-        df['is_regime_change'] = change
-        df['regime_intensity'] = z
-        
+        if df.index.tz is None:
+            df.index = df.index.tz_localize("UTC")
+        else:
+            df.index = df.index.tz_convert("UTC")
+        df = df.sort_index()
+
+        # 2. INTEGRACIÓN DE DATOS EXTERNOS
+
+        # A) SpaceX
         try:
-            launches = get_spacex_launches_2025()
-            proximity = calculate_launch_proximity(df.index, launches)
-            df['spacex_launch_proximity'] = proximity
-        except Exception as e:
-            logger.error(f"Fallo al integrar SpaceX data: {e}")
-            df['spacex_launch_proximity'] = 14
-            
+            launches = load_spacex_launches_from_csv()
+            prox, counts = calculate_spacex_features_vectorized(df.index, launches)
+            df["spacex_launch_proximity"] = prox
+            df["spacex_future_launch_count"] = counts
+        except Exception:
+            df["spacex_launch_proximity"] = 14
+            df["spacex_future_launch_count"] = 0
+
+        # B) Tesla
         try:
-            start_str = df.index.min().strftime('%Y-%m-%d')
-            end_str = df.index.max().strftime('%Y-%m-%d')
-            volatility_series = calculate_tesla_garch_volatility(start_str, end_str)
-            df['tesla_volatility_garch'] = volatility_series.reindex(df.index, method='ffill').fillna(0.02)
+            start_str = df.index.min().strftime("%Y-%m-%d")
+            end_str = df.index.max().strftime("%Y-%m-%d")
+            df_tsla = fetch_tesla_market_data(start_str, end_str)
+
+            if not df_tsla.empty:
+                cols_to_drop = [c for c in df_tsla.columns if c in df.columns]
+                if cols_to_drop:
+                    df = df.drop(columns=cols_to_drop)
+                df = df.join(df_tsla, how="left")
         except Exception as e:
-            logger.error(f"Fallo al integrar Tesla data: {e}")
-            df['tesla_volatility_garch'] = 0.02
+            logger.error(f"Tesla data join failed: {e}")
 
-        if 'event_magnitude' not in df.columns: df['event_magnitude'] = 0
-        if 'reply_momentum' not in df.columns: df['reply_momentum'] = 0
-        if 'news_sentiment_spike' not in df.columns: df['news_sentiment_spike'] = 0
+        # C) News
+        try:
+            df_news = load_elon_news_data()
+            if not df_news.empty:
+                cols_to_drop = [c for c in ["news_volume", "avg_sentiment", "news_vol_log"] if c in df.columns]
+                df = df.drop(columns=cols_to_drop)
+                df = df.join(df_news[["news_volume", "avg_sentiment"]], how="left")
+                df["news_vol_log"] = np.log1p(df["news_volume"].fillna(0))
+                df["avg_sentiment"] = df["avg_sentiment"].fillna(0)
+                df = df.drop(columns=["news_volume"])
+        except Exception:
+            pass
+        
+        # D) POLYMARKET (NUEVO BLOQUE: DAILY FEATURES)
+        # -------------------------------------------------------------------
+        try:
+            df_poly = load_polymarket_features()
+            if not df_poly.empty:
+                # 1. Eliminar colisiones
+                cols_to_drop = [c for c in df_poly.columns if c in df.columns]
+                if cols_to_drop:
+                    df = df.drop(columns=cols_to_drop)
+                
+                # 2. Unir (Join Left) usando el índice fecha
+                df = df.join(df_poly, how="left")
 
-        df = df.fillna(0)
-        return df
+                # 3. Relleno ligero (solo para fines de semana o huecos mínimos)
+                poly_cols = df_poly.columns.tolist()
+                df[poly_cols] = df[poly_cols].ffill(limit=3).fillna(0)
+                
+                logger.info(f"✅ Integrated {len(poly_cols)} Polymarket features.")
+        except Exception as e:
+            logger.error(f"Error integrating Polymarket features: {e}")
+        # -------------------------------------------------------------------
+
+        # 3. GENERACIÓN DE FEATURES TÉCNICAS
+        df = self._add_event_features(df)
+
+        # 4. REGIMEN CHANGE
+        z, high, low, change = self._calculate_regime_change(df["lag_1"])
+        df["is_high_regime"] = high
+        df["is_regime_change"] = change
+        df["regime_intensity"] = z
+
+        return df.fillna(0)
 
     def generate_live_features(self, df_raw):
-        """
-        Retorna la ÚLTIMA fila de features procesadas.
-        """
         full_features = self.process_data(df_raw)
-
-        model_required_features = [
-            "lag_1", "roll_sum_7", "momentum", "last_burst",
-            "is_high_regime", "is_regime_change", "event_magnitude",
-            "reply_momentum", "spacex_launch_proximity",
-            "tesla_volatility_garch", "news_sentiment_spike",
+        
+        # Lista FINAL de features requeridas por el modelo
+        required = [
+            "lag_1",
+            "roll_sum_7",
+            "momentum",
+            "last_burst",
+            "is_high_regime",
+            "is_regime_change",
+            "event_spacex_hype",
+            "event_spacex_t_minus_1",
+            "event_tsla_crash",
+            "event_tsla_pump",
+            "event_high_volatility",
+            "event_negative_news_spike",
+            "is_weekend",
+            "is_sunday",
+            # Nuevas features de Polymarket
+            "poly_implied_mean_tweets",
+            "poly_entropy",
+            "poly_daily_vol",
+            "poly_max_prob"
         ]
 
-        missing_features = [f for f in model_required_features if f not in full_features.columns]
-        for f in missing_features:
-            full_features[f] = 0
+        # Asegurar que todas existan (rellenar con 0 si faltan)
+        for col in required:
+            if col not in full_features.columns:
+                full_features[col] = 0
 
         if full_features.empty:
-            return pd.DataFrame(columns=model_required_features)
-
-        live_row = full_features[model_required_features].iloc[-1].to_frame().T
-        return live_row
+            return pd.DataFrame(columns=required)
+        
+        return full_features[required].iloc[-1].to_frame().T

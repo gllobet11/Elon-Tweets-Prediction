@@ -6,129 +6,91 @@ from datetime import timedelta
 from src.processing.feature_eng import FeatureEngineer
 
 import os
-import shutil # Added for clearing debug directory
+import shutil  # Added for clearing debug directory
+
 
 def get_hybrid_prediction(
-    prophet_model,
-    all_features_df: pd.DataFrame,
-    days_forward: int = 7,
-    debug_mode: bool = False,
-    debug_path: str = "debug_dumps"
+    prophet_model, all_features_df: pd.DataFrame, days_forward: int = 7
 ) -> tuple[pd.DataFrame, dict]:
     """
-    Generates predictions using a recursive walk-forward strategy.
-    For each future day, it predicts the value, then uses that value
-    to compute the features for the next day.
+    Genera predicciones recursivas (Walk-Forward) asegurando que los lags
+    se calculen correctamente para cada día futuro.
     """
     if all_features_df.empty:
-        logger.error("Feature DataFrame is empty. Cannot predict.")
         return pd.DataFrame(), {}
 
-    if debug_mode:
-        logger.info(f"Debug mode enabled. Snapshots will be saved to: {debug_path}")
-        if os.path.exists(debug_path):
-            shutil.rmtree(debug_path) # Clear previous debug dumps
-        os.makedirs(debug_path, exist_ok=True)
-    
-    # Initialize a FeatureEngineer instance
+    # Inicializamos el ingeniero
     feature_engineer = FeatureEngineer()
 
-    # Initialize a FeatureEngineer instance
-    feature_engineer = FeatureEngineer()
-    
-    # Start with the most recent historical data as the seed
-    latest_features = all_features_df.iloc[[-1]].copy()
-    
-    all_predictions = []
-    
-    # Use a copy of the historical data that we can extend with new predictions
-    extended_history = all_features_df.copy()
+    # Trabajamos con una copia del histórico para ir añadiendo el futuro simulado
+    # Solo necesitamos las columnas base, el engineer recalculará el resto
+    history_expanded = all_features_df.copy()
+
+    # Asegurarnos de que el índice es datetime
+    if not isinstance(history_expanded.index, pd.DatetimeIndex):
+        history_expanded.index = pd.to_datetime(history_expanded.index)
+
+    predictions = []
 
     for i in range(days_forward):
-        # 1. Prepare the DataFrame for this step's prediction
-        # The features for the day we want to predict are based on the last row of our history.
-        # Prophet expects the 'ds' column to be the date it is predicting for.
-        prediction_date = latest_features.index[0] + timedelta(days=1)
-        
-        current_step_df = latest_features.copy()
-        current_step_df = current_step_df.reset_index(drop=True) # Reset index to avoid issues
-        current_step_df['ds'] = prediction_date # Set ds to the date we are predicting
+        # 1. Determinar la fecha siguiente
+        last_date = history_expanded.index[-1]
+        next_date = last_date + timedelta(days=1)
 
-        # Ensure 'ds' is timezone-naive for Prophet
-        if current_step_df["ds"].dt.tz is not None:
-            current_step_df["ds"] = current_step_df["ds"].dt.tz_localize(None)
+        # 2. Crear fila placeholder para el siguiente día
+        # Inicializamos con 0 o NaN. Lo importante es que exista el índice.
+        # Las features externas (Tesla/SpaceX) se llenarán al llamar a process_data
+        # (si hay datos futuros disponibles en los CSVs o APIs)
+        new_row = pd.DataFrame(index=[next_date])
 
-        # 2. Predict for the next day
-        forecast = prophet_model.predict(current_step_df)
-        predicted_tweets = forecast["yhat"].iloc[0]
-        
-        # Store the prediction
-        prediction_date = latest_features.index[0] + timedelta(days=1)
-        
-        # --- DEBUG SNAPSHOT: Predicted Tweets Value ---
-        if debug_mode:
-            step_num = f"{i:03d}"
-            with open(f"{debug_path}/step_{step_num}_00_prediction_details.txt", "w") as f:
-                f.write(f"Iteration: {i}\n")
-                f.write(f"Prediction Date: {prediction_date}\n")
-                f.write(f"Raw Prophet yhat: {predicted_tweets}\n")
-                f.write(f"Rounded n_tweets: {max(0, int(round(predicted_tweets)))}\n")
-            
-            # Save the input to Prophet for this step
-            current_step_df.to_csv(f"{debug_path}/step_{step_num}_01_prophet_input.csv", index=False)
+        # Concatenamos temporalmente para calcular features
+        temp_df = pd.concat([history_expanded, new_row])
 
-        # Apply rounding and ensure non-negative for discrete counts
-        predicted_tweets = max(0, int(round(predicted_tweets))) # Apply suggested rounding here
+        # 3. Recalcular Features (Aquí ocurre la magia de los Lags correctos)
+        # process_data tomará el 'n_tweets' de ayer y lo pondrá en 'lag_1' de hoy
+        processed_df = feature_engineer.process_data(temp_df)
 
-        all_predictions.append({"ds": prediction_date, "y_pred": predicted_tweets})
+        # 4. Extraer la fila lista para predecir (la última)
+        row_to_predict = processed_df.iloc[[-1]].copy()
 
-        # 3. Prepare for the *next* iteration: update features with the new prediction
-        # Create a new row for the next day
-        next_day_features = latest_features.copy()
-        next_day_features.index = [prediction_date]
-        
-        # Update the 'n_tweets' with our new prediction. This is the recursive step.
-        next_day_features['n_tweets'] = predicted_tweets # Now this is the rounded integer value
-        
-        # CRITICAL FIX: Update lagged features in next_day_features based on the *newly predicted n_tweets*
-        # This prevents lag_1 from carrying over historical actuals into recursive predictions.
-        next_day_features['lag_1'] = predicted_tweets
-        # Other lagged/rolling features will be correctly re-calculated by feature_engineer.process_data
+        # Preparar para Prophet (ds format)
+        row_for_prophet = row_to_predict.reset_index().rename(columns={"index": "ds"})
+        if row_for_prophet["ds"].dt.tz is not None:
+            row_for_prophet["ds"] = row_for_prophet["ds"].dt.tz_localize(None)
 
-        # Append this new predicted row to our ongoing history
-        extended_history = pd.concat([extended_history, next_day_features])
-        
-        # Recalculate features based on this extended history.
-        # This will correctly update 'lag_1', 'roll_sum_7', etc. for the *next* day to be predicted.
-        # Ensure enough history for rolling features, so pass the entire extended_history.
-        recalculated_features = feature_engineer.process_data(extended_history)
-        
-        # --- DEBUG: Check columns after feature engineering ---
-        if debug_mode:
-            logger.debug(f"Step {i:03d}: Recalculated features columns: {recalculated_features.columns.tolist()}")
-            logger.debug(f"Step {i:03d}: Recalculated features tail:\n{recalculated_features.tail()}")
+        # 5. Predecir
+        forecast = prophet_model.predict(row_for_prophet)
+        yhat = forecast["yhat"].values[0]
 
-        # The last row of the newly calculated features is our input for the next loop iteration
-        latest_features = recalculated_features.iloc[[-1]].copy()
+        # Redondear y asegurar no negativo (tweets son enteros)
+        yhat_clean = max(0, int(round(yhat)))
 
-        # --- DEBUG: Check columns of latest_features ---
-        if debug_mode:
-            logger.debug(f"Step {i:03d}: Latest features columns (for next Prophet input): {latest_features.columns.tolist()}")
+        # 6. Guardar predicción y actualizar histórico "ficticio"
+        predictions.append({"ds": next_date, "y_pred": yhat_clean})
 
-        # --- DEBUG SNAPSHOT: Engineered Features Output ---
-        if debug_mode:
-            step_num = f"{i:03d}"
-            latest_features.to_csv(f"{debug_path}/step_{step_num}_02_engineered_output.csv")
+        # Escribimos el valor predicho en nuestro histórico expandido
+        # para que sirva de base para el lag del siguiente día del bucle
+        # (Si no hacemos esto, el siguiente día tendrá un lag de 0)
 
-    predictions_df = pd.DataFrame(all_predictions)
-    
-    # Calculate final metrics
-    sum_predictions = predictions_df["y_pred"].sum()
+        # Añadimos la fila al history_expanded con el valor predicho
+        # Nota: Solo necesitamos 'n_tweets' para que el feature engineer funcione en la prox vuelta
+        new_row_with_val = pd.DataFrame({"n_tweets": [yhat_clean]}, index=[next_date])
+        # Aseguramos compatibilidad de columnas si hay más en history
+        for col in history_expanded.columns:
+            if col not in new_row_with_val.columns:
+                new_row_with_val[col] = 0  # O valores por defecto
+
+        history_expanded = pd.concat([history_expanded, new_row_with_val])
+
+    # --- Resultados Finales ---
+    predictions_df = pd.DataFrame(predictions)
+
+    total_tweets = predictions_df["y_pred"].sum()
     metrics = {
-        "weekly_total_prediction": sum_predictions,
-        "sum_of_predictions": sum_predictions,
-        "sum_of_actuals": 0, # In a pure forecast, actuals are 0
-        "remaining_days_fraction": days_forward
+        "weekly_total_prediction": total_tweets,
+        "sum_of_predictions": total_tweets,
+        "sum_of_actuals": 0,  # En modo futuro puro es 0
+        "remaining_days_fraction": days_forward,
     }
-    
+
     return predictions_df, metrics

@@ -11,12 +11,12 @@ try:
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "."))
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
-    from src.ingestion.unified_feed import load_unified_data
+    from src.dashboard.dashboard_data_loader import DashboardDataLoader
 except (ImportError, ModuleNotFoundError):
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
-    from src.ingestion.unified_feed import load_unified_data
+    from src.dashboard.dashboard_data_loader import DashboardDataLoader
 
 # --- Configuración de la Página ---
 st.set_page_config(
@@ -27,25 +27,15 @@ st.set_page_config(
 
 
 # --- Carga de Datos ---
-@st.cache_data(ttl=3600)
-def load_data():
-    df_tweets = load_unified_data()
-    df_tweets["created_at"] = pd.to_datetime(df_tweets["created_at"]).dt.tz_convert(
-        None,
-    )
-    return df_tweets
-
-
-def get_daily_series(df_tweets):
-    df = df_tweets.copy()
-    df["date"] = df["created_at"].dt.floor("D")
-    daily_counts = df.groupby("date").size().rename("n_tweets").to_frame()
-    full_idx = pd.date_range(
-        start=daily_counts.index.min(),
-        end=daily_counts.index.max(),
-        freq="D",
-    )
-    return daily_counts.reindex(full_idx, fill_value=0)
+@st.cache_data(ttl=900)  # Cache for 15 minutes
+def load_all_data():
+    """
+    Uses the new loader to get all necessary dataframes.
+    """
+    loader = DashboardDataLoader()
+    # granular_data is now in ET, daily_data is also in ET
+    granular_data, daily_data = loader.load_and_prepare_tweets_data()
+    return granular_data, daily_data
 
 
 # --- UI ---
@@ -55,13 +45,15 @@ st.markdown(
 )
 
 try:
-    raw_tweets = load_data()
-    daily_data = get_daily_series(raw_tweets)
+    granular_data_et, daily_data = load_all_data() # daily_data is already in ET
 
     # --- CÁLCULOS PREVIOS ---
+    # The index is already timezone-aware (America/New_York)
     # 1. Datos del Mes Actual (Para el Ancla de Media)
-    current_month = datetime.now().month
-    current_year = datetime.now().year
+    now_et = datetime.now(daily_data.index.tz)
+    current_month = now_et.month
+    current_year = now_et.year
+    
     month_data = daily_data[
         (daily_data.index.month == current_month)
         & (daily_data.index.year == current_year)
@@ -74,7 +66,6 @@ try:
     std_7d = last_7d["n_tweets"].std()
 
     # KPI Personalizado: ¿Cuántos días superaron la media + 1 desviación estándar?
-    # Esto indica "días de furia" recientes.
     threshold = mean_7d + std_7d
     outlier_days = last_7d[last_7d["n_tweets"] > threshold].shape[0]
 
@@ -89,7 +80,6 @@ try:
     c1, c2, c3, c4 = st.columns(4)
 
     with c1:
-        # KPI: Media Mensual (El Ancla)
         st.metric(
             label="Media Diaria (Mes Actual)",
             value=f"{monthly_mean:.1f}",
@@ -97,22 +87,17 @@ try:
         )
 
     with c2:
-        # KPI: Desviación Actual vs Media
-        # ¿Cuán lejos estamos hoy (o ayer) de lo normal?
         deviation = yesterday_val - monthly_mean
-        is_overheated = deviation > (monthly_mean * 0.5)  # Si está 50% por encima
+        is_overheated = deviation > (monthly_mean * 0.5)
 
         st.metric(
             label="Desviación Ayer vs Media",
             value=f"{yesterday_val:.0f}",
             delta=f"{deviation:+.1f} sobre la media",
             delta_color="inverse" if is_overheated else "normal",
-            # Inverse: Si es muy alto (rojo), indica riesgo de bajada
         )
 
     with c3:
-        # KPI Sugerido: Días Outlier (Fatiga)
-        # Si hay muchos días outlier recientes, aumenta la probabilidad de descanso
         st.metric(
             label="Días 'Outlier' (Últimos 7)",
             value=f"{outlier_days} días",
@@ -122,7 +107,6 @@ try:
         )
 
     with c4:
-        # KPI: Volatilidad (Std Dev 7d)
         st.metric(
             label="Desviación Típica (7d)",
             value=f"{std_7d:.2f}",
@@ -131,51 +115,28 @@ try:
 
     st.divider()
 
-    # --- VISUALIZACIÓN DE BANDAS DE BOLLINGER (CASERA) ---
-    # Esto visualiza tu idea perfectamente: Media vs Desviación
+    # --- VISUALIZACIÓN DE BANDAS DE BOLLINGER ---
     st.subheader("📊 Bandas de Actividad (30 Días)")
 
     chart_df = daily_data.tail(30).reset_index()
     chart_df.columns = ["Fecha", "Tweets"]
 
-    # Calcular bandas (Media +/- 1 Std)
     chart_df["Media"] = chart_df["Tweets"].rolling(7).mean()
     chart_df["Std"] = chart_df["Tweets"].rolling(7).std()
     chart_df["Upper"] = chart_df["Media"] + chart_df["Std"]
     chart_df["Lower"] = chart_df["Media"] - chart_df["Std"]
 
-    # Gráfico Base
     base = alt.Chart(chart_df).encode(x="Fecha:T")
-
-    # Barras de Tweets
-    bars = base.mark_bar(opacity=0.5, color="#1DA1F2").encode(
-        y=alt.Y("Tweets:Q"),
-        tooltip=["Fecha", "Tweets"],
-    )
-
-    # Línea de Media
-    line_mean = base.mark_line(color="black", strokeDash=[5, 5]).encode(
-        y="Media:Q",
-        tooltip=[alt.Tooltip("Media", format=".1f", title="Media 7d")],
-    )
-
-    # Área de Desviación (Banda)
+    bars = base.mark_bar(opacity=0.5, color="#1DA1F2").encode(y=alt.Y("Tweets:Q"), tooltip=["Fecha", "Tweets"])
+    line_mean = base.mark_line(color="black", strokeDash=[5, 5]).encode(y="Media:Q", tooltip=[alt.Tooltip("Media", format=".1f", title="Media 7d")])
     band = base.mark_area(opacity=0.2, color="gray").encode(y="Lower:Q", y2="Upper:Q")
-
-    # Puntos Outlier (Rojos)
-    outliers = (
-        base.mark_circle(color="red", size=60)
-        .encode(y="Tweets:Q", tooltip=["Fecha", "Tweets"])
-        .transform_filter(alt.datum.Tweets > alt.datum.Upper)
-    )
+    outliers = base.mark_circle(color="red", size=60).encode(y="Tweets:Q", tooltip=["Fecha", "Tweets"]).transform_filter(alt.datum.Tweets > alt.datum.Upper)
 
     chart = (band + bars + line_mean + outliers).properties(
         height=400,
         title="Volumen vs Media Móvil 7d (Puntos Rojos = Outliers > 1 Std)",
     )
-
     st.altair_chart(chart, use_container_width=True)
-    # --- PEGAR ESTO A CONTINUACIÓN DEL ÚLTIMO GRÁFICO (DENTRO DEL TRY) ---
 
     st.divider()
     st.subheader("📆 Análisis de Trayectoria Semanal (Crucial para Polymarket)")
@@ -183,50 +144,45 @@ try:
     col_A, col_B = st.columns([2, 1])
 
     with col_A:
-        # --- 1. GRÁFICO ACUMULADO (CUMULATIVE SUM) ---
-        # Preparamos los datos
-        # Crear columna de "Día de la Semana" (0=Mon, 6=Sun)
         df_cum = daily_data.copy()
         df_cum["weekday"] = df_cum.index.dayofweek
+        
+        # The market week starts on Friday at 12:00 PM ET. Day 4.
+        market_week_start_day = 4 
 
-        # 1. Datos Semana Actual (Calculamos el inicio de la semana actual, asumiendo Lunes como inicio)
-        # Ajusta 'W-MON' si tu semana de Polymarket empieza otro día (ej. Viernes)
-        current_week_start = df_cum.index.max() - pd.Timedelta(
-            days=df_cum.index.max().weekday(),
-        )
-        current_week_data = df_cum[df_cum.index >= current_week_start].copy()
+        # Find the most recent Friday
+        today_et = df_cum.index.max()
+        days_since_friday = (today_et.weekday() - market_week_start_day + 7) % 7
+        current_week_start_date = today_et - pd.Timedelta(days=days_since_friday)
+
+        current_week_data = df_cum[df_cum.index >= current_week_start_date].copy()
         current_week_data["cumsum"] = current_week_data["n_tweets"].cumsum()
         current_week_data["Type"] = "Semana Actual"
 
-        # 2. Datos Semana Anterior
-        last_week_start = current_week_start - pd.Timedelta(days=7)
+        last_week_start_date = current_week_start_date - pd.Timedelta(days=7)
         last_week_data = df_cum[
-            (df_cum.index >= last_week_start) & (df_cum.index < current_week_start)
+            (df_cum.index >= last_week_start_date) & (df_cum.index < current_week_start_date)
         ].copy()
+        # Align weekday for comparison
+        last_week_data["weekday"] = (last_week_data["weekday"] - market_week_start_day + 7) % 7
+        last_week_data = last_week_data.sort_values("weekday")
         last_week_data["cumsum"] = last_week_data["n_tweets"].cumsum()
         last_week_data["Type"] = "Semana Anterior"
-        # Alinear dias para el gráfico (truco visual: ponemos misma fecha ficticia o usamos weekday)
 
-        # 3. Promedio Histórico (Últimos 3 meses)
         three_months_ago = df_cum.index.max() - pd.DateOffset(months=3)
         hist_data = df_cum[df_cum.index >= three_months_ago].copy()
+        
+        # Adjust weekday for historical average
+        hist_data["weekday_market"] = (hist_data.index.dayofweek - market_week_start_day + 7) % 7
         avg_week = (
-            hist_data.groupby("weekday")["n_tweets"].mean().cumsum().reset_index()
+            hist_data.groupby("weekday_market")["n_tweets"].mean().cumsum().reset_index()
         )
         avg_week.columns = ["weekday", "cumsum"]
         avg_week["Type"] = "Promedio (3 meses)"
 
-        # Unir para Altair
-        # Mapear weekday 0-6 a nombres para el eje X
-        days_map = {
-            0: "Lun",
-            1: "Mar",
-            2: "Mié",
-            3: "Jue",
-            4: "Vie",
-            5: "Sáb",
-            6: "Dom",
-        }
+        days_map = {0: "Vie", 1: "Sáb", 2: "Dom", 3: "Lun", 4: "Mar", 5: "Mié", 6: "Jue"}
+        
+        current_week_data["weekday"] = (current_week_data["weekday"] - market_week_start_day + 7) % 7
 
         combined_chart_data = pd.concat(
             [
@@ -237,92 +193,86 @@ try:
         )
         combined_chart_data["Día"] = combined_chart_data["weekday"].map(days_map)
 
-        # Gráfico de Líneas
         chart_cum = (
             alt.Chart(combined_chart_data)
             .mark_line(point=True)
             .encode(
                 x=alt.X(
                     "weekday",
-                    title="Día de la Semana",
+                    title="Día de la Semana del Mercado (Inicia Viernes)",
                     axis=alt.Axis(
-                        labelExpr="datum.value == 0 ? 'Lun' : datum.value == 1 ? 'Mar' : datum.value == 2 ? 'Mié' : datum.value == 3 ? 'Jue' : datum.value == 4 ? 'Vie' : datum.value == 5 ? 'Sáb' : 'Dom'",
+                        values=list(days_map.keys()),
+                        labelExpr="datum.label"
                     ),
+                    sort=list(days_map.keys())
                 ),
                 y=alt.Y("cumsum", title="Tweets Acumulados"),
                 color=alt.Color(
                     "Type",
                     scale=alt.Scale(
-                        domain=[
-                            "Semana Actual",
-                            "Semana Anterior",
-                            "Promedio (3 meses)",
-                        ],
+                        domain=["Semana Actual", "Semana Anterior", "Promedio (3 meses)"],
                         range=["red", "gray", "blue"],
                     ),
                 ),
                 tooltip=["Type", "Día", alt.Tooltip("cumsum", format=".0f")],
             )
             .properties(title="Carrera Semanal: Acumulado vs Histórico", height=350)
+            .configure_axis_x(labelAngle=0)
         )
+        # Replace labelExpr with actual labels for compatibility
+        chart_cum.encoding.x.axis.labelExpr = "['Vie', 'Sáb', 'Dom', 'Lun', 'Mar', 'Mié', 'Jue'][datum.value]"
+
 
         st.altair_chart(chart_cum, use_container_width=True)
 
     with col_B:
-        # --- 2. ESTACIONALIDAD (Heatmap Semanal) ---
         st.markdown("**Patrón Diario (Últimos 90 días)**")
 
-        seasonality = hist_data.groupby("weekday")["n_tweets"].mean().reset_index()
-        seasonality["Día"] = seasonality["weekday"].map(days_map)
+        hist_data['weekday_label'] = hist_data.index.day_name()
+        seasonality = hist_data.groupby("weekday_label")["n_tweets"].mean().reset_index()
+        
+        day_order = ["Friday", "Saturday", "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"]
+        seasonality['weekday_label'] = pd.Categorical(seasonality['weekday_label'], categories=day_order, ordered=True)
+        seasonality = seasonality.sort_values('weekday_label')
 
-        # Ordenar para el gráfico
-        day_order = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
 
         chart_bar = (
             alt.Chart(seasonality)
             .mark_bar()
             .encode(
                 x=alt.X("n_tweets", title="Media Tweets"),
-                y=alt.Y("Día", sort=day_order, title=""),
+                y=alt.Y("weekday_label", sort=day_order, title=""),
                 color=alt.Color("n_tweets", legend=None),
-                tooltip=["Día", alt.Tooltip("n_tweets", format=".1f")],
+                tooltip=["weekday_label", alt.Tooltip("n_tweets", format=".1f")],
             )
             .properties(height=350)
         )
-
         st.altair_chart(chart_bar, use_container_width=True)
 
-    # --- 3. PROYECCIÓN FINAL (Métrica de Texto) ---
-    # Calculamos qué % de la semana promedio llevamos completado
-    today_idx = current_week_data["weekday"].max()
+    today_market_weekday = (today_et.weekday() - market_week_start_day + 7) % 7
+    
+    avg_total = avg_week["cumsum"].max()
+    avg_until_today_rows = avg_week[avg_week["weekday"] == today_market_weekday]
 
-    # Cuántos tweets suele hacer en los días que FALTAN
-    remaining_days_avg = avg_week[avg_week["weekday"] > today_idx]
-
-    if not remaining_days_avg.empty:
-        # El acumulado total promedio menos el acumulado hasta hoy promedio (del modelo histórico)
-        avg_total = avg_week["cumsum"].max()
-        # Buscamos el valor acumulado promedio para el día actual
-        avg_until_today_rows = avg_week[avg_week["weekday"] == today_idx]
-
-        if not avg_until_today_rows.empty:
-            avg_until_today = avg_until_today_rows["cumsum"].values[0]
-            expected_remaining = avg_total - avg_until_today
-        else:
-            expected_remaining = 0
+    if not avg_until_today_rows.empty:
+        avg_until_today = avg_until_today_rows["cumsum"].values[0]
+        expected_remaining = avg_total - avg_until_today
     else:
-        expected_remaining = 0  # Semana terminada o fin de semana completo
+        expected_remaining = 0
 
     current_total = current_week_data["cumsum"].max()
     projected_total = current_total + expected_remaining
 
-    st.info(f"""
+    st.info(
+        f"""
     🧠 **Proyección Ingenua (Naive Projection):**
     
-    Llevamos **{current_total}** tweets esta semana. Históricamente, en los días restantes Elon hace **{expected_remaining:.0f}** tweets más.
+    Llevamos **{current_total}** tweets esta semana de mercado. Históricamente, en los días restantes Elon hace **{expected_remaining:.0f}** tweets más.
     
     👉 **Proyección Final Estimada: ~{projected_total:.0f} Tweets** (Si se comporta como el promedio reciente).
-    """)
+    """
+    )
 
 except Exception as e:
-    st.error(f"Error: {e}")
+    st.error(f"Ocurrió un error al cargar o procesar los datos: {e}", icon="🔥")
+    st.exception(e)

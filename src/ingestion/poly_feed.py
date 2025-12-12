@@ -1,26 +1,29 @@
-import json
-import os
-import re
-import sys
 import time
+import re
 import httpx
-from datetime import datetime
-
-import pandas as pd  # Import pandas here to resolve NameError
 from loguru import logger
 from py_clob_client.client import ClobClient
 from py_clob_client.exceptions import PolyApiException
 
-
 class PolymarketFeed:
+    """
+    Versión FINAL CORREGIDA:
+    - Usa get_price() correctamente (convierte string a float)
+    - Cache de mercados
+    - Early exit optimization
+    """
     def __init__(self, host="https://clob.polymarket.com", chain_id=137):
         self.valid = False
+        self.clob_base = host
         try:
             self.client = ClobClient(host, chain_id=chain_id)
             self.valid = True
+            logger.success("✅ ClobClient initialized")
         except Exception as e:
-            print(f"❌ Error initializing ClobClient: {e}", file=sys.stderr)
+            logger.error(f"❌ Error initializing ClobClient: {e}")
             self.client = None
+        
+        self._markets_cache = {}
 
     def _robust_api_call(self, api_func, *args, retries=3, delay=2, **kwargs):
         for attempt in range(retries):
@@ -32,298 +35,248 @@ class PolymarketFeed:
                 if attempt < retries - 1:
                     time.sleep(delay)
                 else:
-                    logger.error(f"API call failed after {retries} attempts: {e}")
+                    logger.warning(f"API call failed after {retries} retries: {e}")
                     return None
 
-    def fetch_market_ids_automatically(self, keywords: list, bins_dict: dict):
-        if not self.valid:
-            return None
-
-        cache_path = "data/markets/cached_ids.json"
-
-        try:
-            if os.path.exists(cache_path):
-                with open(cache_path) as f:
-                    cached_data = json.load(f)
-                if cached_data.get("keywords") == keywords:
-                    logger.info(
-                        f"✅ Market IDs loaded from cache: {cache_path}",
-                    )
-                    return cached_data["bins_dict"]
-        except (OSError, json.JSONDecodeError) as e:
-            logger.warning(f"⚠️ Could not read IDs cache ({e}).")
-
-        logger.info(f"🔎 Searching markets on API (Keywords: {keywords})...")
-
-        for bin_info in bins_dict.values():
-            bin_info["id_yes"] = None
-            bin_info["id_no"] = None
-
-        mapped_count = 0
-        next_cursor = ""
-        while True:
-            markets_resp = self._robust_api_call(
-                self.client.get_markets,
-                next_cursor=next_cursor,
-            )
-            if not markets_resp or not markets_resp.get("data"):
-                break
-
-            for market in markets_resp.get("data", []):
-                question = market.get("question", "").lower()
-                if all(k.lower() in question for k in keywords) and market.get(
-                    "active",
-                ):
-                    match = re.search(
-                        r"([\d,]+-[\d,]+|[\d,]+\+)",
-                        market.get("question", ""),
-                    )
-                    if match:
-                        bin_label = match.group(1)
-                        tokens = market.get("tokens", [])
-                        yes_token = next(
-                            (t for t in tokens if t.get("outcome") == "Yes"),
-                            None,
-                        )
-                        no_token = next(
-                            (t for t in tokens if t.get("outcome") == "No"),
-                            None,
-                        )
-
-                        if yes_token and no_token and bin_label in bins_dict:
-                            if bins_dict[bin_label].get("id_yes") is None:
-                                bins_dict[bin_label]["id_yes"] = yes_token["token_id"]
-                                bins_dict[bin_label]["id_no"] = no_token["token_id"]
-                                logger.info(f"   [✅] Bin {bin_label} -> Mapped")
-                                mapped_count += 1
-
-            next_cursor = markets_resp.get("next_cursor")
-            if not next_cursor or next_cursor == "LTE=":
-                break
-
-        logger.info(
-            f"✅ Mapping completed: {mapped_count}/{len(bins_dict)} bins ready.",
-        )
-
-        if mapped_count > 0:
+    def _to_hex_token_id(self, token_id_str: str) -> str:
+        """Convierte Asset ID numérico a Hex para la API del CLOB."""
+        if not token_id_str: return None
+        if str(token_id_str).startswith("0x"): return token_id_str
+        if str(token_id_str).isdigit():
             try:
-                with open(cache_path, "w") as f:
-                    cache_content = {"keywords": keywords, "bins_dict": bins_dict}
-                    json.dump(cache_content, f, indent=2)
-                logger.info(f"✅ Market IDs saved to cache: {cache_path}")
-            except OSError as e:
-                logger.warning(f"⚠️ Could not write to IDs cache: {e}")
+                return hex(int(token_id_str))
+            except:
+                return token_id_str
+        return token_id_str
 
-        return bins_dict
-
-    def get_market_valuation(
-        self,
-        yes_token_id: str,
-        no_token_id: str,
-        entry_price_fallback=0.0,
-    ) -> dict:
+    def get_market_valuation(self, yes_token_id: str, no_token_id: str, entry_price_fallback=0.0) -> dict:
+        """
+        CORREGIDO: Usa get_price() SIN conversión hex.
+        
+        get_price() acepta token_id como STRING DECIMAL directamente.
+        NO necesita conversión a hexadecimal.
+        
+        Returns:
+        - BUY: best_bid (precio para comprar)
+        - SELL: best_ask (precio para vender)
+        """
         if not self.valid:
             return {"mid_price": entry_price_fallback, "status": "CLIENT_ERR"}
 
-        ob_yes = self._robust_api_call(self.client.get_order_book, yes_token_id)
-        if ob_yes and (ob_yes.bids or ob_yes.asks):
-            highest_bid = (
-                max([float(b.price) for b in ob_yes.bids]) if ob_yes.bids else 0.0
-            )
-            lowest_ask = (
-                min([float(a.price) for a in ob_yes.asks]) if ob_yes.asks else 1.0
-            )
+        # IMPORTANTE: NO convertir a hex, usar token_id decimal directo
+        yes_token_str = str(yes_token_id)
+        no_token_str = str(no_token_id)
+        
+        # 1. Intentar YES token con get_price()
+        try:
+            buy_price_res = self._robust_api_call(self.client.get_price, yes_token_str, side="BUY")
+            sell_price_res = self._robust_api_call(self.client.get_price, yes_token_str, side="SELL")
 
-            if highest_bid > 0 or lowest_ask < 1:
-                return {
-                    "mid_price": (highest_bid + lowest_ask) / 2,
-                    "bid": highest_bid,
-                    "ask": lowest_ask,
-                    "status": "ACTIVE_YES",
-                }
+            if buy_price_res and sell_price_res:
+                # get_price() devuelve {"price": "0.007"} - convertir string a float
+                best_bid = float(buy_price_res.get("price", "0"))
+                best_ask = float(sell_price_res.get("price", "1"))
 
-        ob_no = self._robust_api_call(self.client.get_order_book, no_token_id)
-        if ob_no and (ob_no.bids or ob_no.asks):
-            highest_bid_no = (
-                max([float(b.price) for b in ob_no.bids]) if ob_no.bids else 0.0
-            )
-            lowest_ask_no = (
-                min([float(a.price) for a in ob_no.asks]) if ob_no.asks else 1.0
-            )
+                # Verificar que los precios son válidos
+                if best_bid > 0 and best_ask < 1.0 and best_ask > best_bid:
+                    mid_price = (best_bid + best_ask) / 2
+                    return {
+                        "mid_price": mid_price,
+                        "bid": best_bid,
+                        "ask": best_ask,
+                        "status": "ACTIVE_YES"
+                    }
+        except Exception as e:
+            logger.debug(f"get_price on YES token failed: {e}")
 
-            if highest_bid_no > 0 or lowest_ask_no < 1:
-                ask = 1.0 - highest_bid_no
-                bid = 1.0 - lowest_ask_no
-                return {
-                    "mid_price": (bid + ask) / 2,
-                    "bid": bid,
-                    "ask": ask,
-                    "status": "ACTIVE_NO",
-                }
+        # 2. Fallback: Intentar NO token
+        try:
+            buy_price_no_res = self._robust_api_call(self.client.get_price, no_token_str, side="BUY")
+            sell_price_no_res = self._robust_api_call(self.client.get_price, no_token_str, side="SELL")
+
+            if buy_price_no_res and sell_price_no_res:
+                best_bid_no = float(buy_price_no_res.get("price", "0"))
+                best_ask_no = float(sell_price_no_res.get("price", "1"))
+                
+                # Derivar precio YES desde NO: YES = 1 - NO
+                yes_bid = 1.0 - best_ask_no
+                yes_ask = 1.0 - best_bid_no
+
+                if yes_bid > 0 and yes_ask < 1.0 and yes_ask > yes_bid:
+                    mid_price = (yes_bid + yes_ask) / 2
+                    return {
+                        "mid_price": mid_price,
+                        "bid": yes_bid,
+                        "ask": yes_ask,
+                        "status": "ACTIVE_NO"
+                    }
+        except Exception as e:
+            logger.debug(f"get_price on NO token failed: {e}")
 
         return {"mid_price": entry_price_fallback, "status": "NO_LIQUIDITY"}
-
+    
     def get_all_bins_prices(self, bins_dict: dict):
+        """Obtiene precios para todos los bins mapeados"""
         snapshot = {}
-        logger.info(f"📊 Getting prices for {len(bins_dict)} bins...")
-        for bin_label, bin_data in bins_dict.items():
-            if bin_data.get("id_yes") and bin_data.get("id_no"):
-                valuation = self.get_market_valuation(
-                    bin_data["id_yes"],
-                    bin_data["id_no"],
-                )
-                snapshot[bin_label] = valuation
+        if not bins_dict: return snapshot
+        
+        valid_bins = {k: v for k, v in bins_dict.items() if v.get("id_yes")}
+        logger.info(f"📊 Getting live prices for {len(valid_bins)} mapped bins...")
+        
+        for bin_label, bin_data in valid_bins.items():
+            snapshot[bin_label] = self.get_market_valuation(
+                bin_data["id_yes"], 
+                bin_data["id_no"],
+                entry_price_fallback=0.5
+            )
+        
+        for k in bins_dict:
+            if k not in snapshot: 
+                snapshot[k] = {"mid_price": 0.0, "status": "MISSING_ID"}
+        
         return snapshot
 
-    def get_market_details(self, keywords: list) -> dict | None:
-        if not self.valid:
-            return None
-        logger.info(f"Searching for market with keywords: {keywords}")
-        next_cursor = ""
-        markets_scanned = 0
-        while True:
-            # Bypass the client library and use httpx directly to debug the 500 error
-            def api_func():
-                markets_url = f"{self.client.host}/markets"
-                params = {}
-                if next_cursor:
-                    params["next_cursor"] = next_cursor
-                
-                # Using a standard httpx client for the request
-                with httpx.Client() as client:
-                    response = client.get(markets_url, params=params)
-                    response.raise_for_status()
-                    return response.json()
-
-            markets_resp = self._robust_api_call(api_func)
-
-            if not markets_resp or not markets_resp.get("data"):
-                break
-            for market in markets_resp.get("data", []):
-                markets_scanned += 1
-                question = market.get("question", "").lower()
-                is_active = market.get("active") is True
-
-                if (
-                    all(keyword.lower() in question for keyword in keywords)
-                    and is_active
-                ):
-                    logger.success(f"Found matching market: {question}")
-                    return market
-            next_cursor = markets_resp.get("next_cursor")
-            if not next_cursor or next_cursor == "LTE=":
-                break
+    def find_markets_by_slug(self, base_slug: str, expected_count: int = 26) -> list:
+        """Busca mercados en CLOB con early exit"""
+        cache_key = f"slug_{base_slug}"
+        if cache_key in self._markets_cache:
+            logger.info(f"📦 Using cached markets for '{base_slug}'")
+            return self._markets_cache[cache_key]
         
-        logger.warning(f"Scan complete. Scanned {markets_scanned} markets, but no active market matched all keywords.")
-        return None
+        url = f"{self.clob_base}/markets"
+        next_cursor = ""
+        found = []
 
-    def get_market_dates(
-        self,
-        market_description: str,
-    ) -> tuple[pd.Timestamp, pd.Timestamp] | tuple[None, None]:
-        """
-        Parses the market start and end dates from the description text robustly.
-        Handles cases where the market spans across the end of a year.
-        """
-        logger.debug(
-            f"Attempting to parse dates from description: '{market_description}'",
-        )
-        if not market_description:
-            return None, None
-
-        match = re.search(r"from (.*? ET) to (.*? ET)", market_description)
-        if not match:
-            logger.error("Could not extract date strings using regex from description.")
-            return None, None
-
-        start_date_str, end_date_str = match.groups()
-
-        # Clean the strings
-        start_clean = start_date_str.replace(" ET", "").strip()
-        end_clean = end_date_str.replace(" ET", "").strip()
+        logger.info(f"🔎 CLOB Search: Looking for '{base_slug}'")
+        logger.warning(f"⏱️  This may take 30-90 seconds (scanning until {expected_count} markets found)...")
 
         try:
-            # Check for year in end date string to use as a reference
-            end_year_match = re.search(r"(\d{4})", end_clean)
-            ref_year = (
-                int(end_year_match.group(1)) if end_year_match else datetime.now().year
+            with httpx.Client(timeout=45.0) as c:
+                page_count = 0
+                start_time = time.time()
+                
+                while True:
+                    params = {"next_cursor": next_cursor} if next_cursor else {}
+                    r = c.get(url, params=params)
+                    r.raise_for_status()
+                    payload = r.json()
+
+                    markets = payload.get("data", [])
+                    page_count += 1
+                    
+                    for m in markets:
+                        slug = m.get("market_slug", "")
+                        if base_slug in slug:
+                            found.append(m)
+                    
+                    # EARLY EXIT
+                    if len(found) >= expected_count:
+                        elapsed = time.time() - start_time
+                        logger.success(
+                            f"✅ Found all {len(found)} markets at page {page_count} "
+                            f"({elapsed:.1f}s) - stopping early"
+                        )
+                        self._markets_cache[cache_key] = found
+                        return found
+
+                    if page_count % 20 == 0:
+                        elapsed = time.time() - start_time
+                        logger.debug(
+                            f"   Page {page_count}: {len(found)}/{expected_count} found "
+                            f"({elapsed:.1f}s elapsed)"
+                        )
+                    
+                    next_cursor = payload.get("next_cursor")
+                    if not next_cursor or next_cursor == "LTE=":
+                        break
+
+            elapsed = time.time() - start_time
+            logger.success(
+                f"✅ Found {len(found)} markets (scanned {page_count} pages in {elapsed:.1f}s)"
             )
-
-            # If start date is missing a year, add the reference year
-            if not re.search(r"(\d{4})", start_clean):
-                start_clean = f"{start_clean}, {ref_year}"
-
-            # Parse dates now that they should both have years
-            end_dt = pd.to_datetime(end_clean)
-            start_dt = pd.to_datetime(start_clean)
-
-            # If start date is after end date, it must be from the previous year
-            if start_dt > end_dt:
-                start_dt = start_dt.replace(year=start_dt.year - 1)
-
-            # Localize to ET and then convert to UTC
-            tz = "America/New_York"
-            market_start_date = start_dt.tz_localize(tz).tz_convert("UTC")
-            market_end_date = end_dt.tz_localize(tz).tz_convert("UTC")
-
-            logger.info(
-                f"Parsed market dates: START={market_start_date}, END={market_end_date}",
-            )
-            return market_start_date, market_end_date
+            
+            if found:
+                self._markets_cache[cache_key] = found
+            
+            return found
 
         except Exception as e:
-            logger.error(f"Error parsing market dates: {e}")
-            return None, None
+            logger.error(f"❌ CLOB search failed: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+            return []
 
-    def get_price_history(
-        self, market_id: str, fidelity: int = 15, start_timestamp: int = 1577836800
-    ) -> list | None:  # Default to Jan 1, 2020 00:00:00 UTC
-        """
-        Fetches the historical price data for a specific market.
+    def fetch_market_ids_automatically(self, keywords: list, bins_dict: dict, market_slug: str = None):
+        """Busca mercados y mapea bins"""
+        working_bins = {k: {**v, "id_yes": None, "id_no": None} for k, v in bins_dict.items()}
+        
+        if not market_slug:
+            logger.error("❌ market_slug is required")
+            return working_bins
+        
+        logger.info(f"🚀 Strategy: CLOB with get_price() for pricing")
+        markets = self.find_markets_by_slug(market_slug, expected_count=len(working_bins))
+        
+        if not markets:
+            logger.error("❌ No markets found in CLOB")
+            return working_bins
+        
+        bins_found = self._map_bins_from_markets(markets, working_bins)
+        logger.success(f"🏁 Mapped {bins_found}/{len(working_bins)} bins")
+        
+        return working_bins
 
-        Args:
-            market_id (str): The market (asset) ID to fetch the history for.
-            fidelity (int): The fidelity of the data points.
-            start_timestamp (int): Unix timestamp (seconds) to start fetching history from.
+    def _map_bins_from_markets(self, markets: list, working_bins: dict) -> int:
+        """Mapea bins desde una lista de mercados"""
+        bins_found = 0
+        
+        for market in markets:
+            question = market.get("question", "")
+            
+            match = re.search(r"(\d[\d,]*)\s*[–-]\s*(\d[\d,]*)|(\d[\d,]*)\+", question)
+            
+            if match:
+                normalized_bin = ""
+                if match.group(1):
+                    s = match.group(1).replace(",", "")
+                    e = match.group(2).replace(",", "")
+                    normalized_bin = f"{s}-{e}"
+                elif match.group(3):
+                    n = match.group(3).replace(",", "")
+                    normalized_bin = f"{n}+"
+                
+                if normalized_bin in working_bins:
+                    tokens = market.get("tokens", [])
+                    
+                    for token in tokens:
+                        token_id = token.get("token_id")
+                        outcome = token.get("outcome", "")
+                        
+                        if outcome == "Yes":
+                            working_bins[normalized_bin]["id_yes"] = token_id
+                        elif outcome == "No":
+                            working_bins[normalized_bin]["id_no"] = token_id
+                    
+                    if working_bins[normalized_bin]["id_yes"] and working_bins[normalized_bin]["id_no"]:
+                        bins_found += 1
+                        logger.debug(f"  ✓ Mapped {normalized_bin}")
+        
+        return bins_found
 
-        Returns:
-            list | None: A list of historical price points, or None if an error occurs.
-        """
-        if not self.valid:
-            logger.error("ClobClient is not valid. Cannot fetch price history.")
+    def get_price_history(self, market_id: str, fidelity: int = 15, start_timestamp: int = 1577836800) -> list | None:
+        """Required for run_ingest.py"""
+        if not self.valid: return None
+        try:
+            url = "https://clob.polymarket.com/prices-history"
+            params = {"market": market_id, "fidelity": fidelity, "startTs": start_timestamp}
+            with httpx.Client(timeout=15.0) as c:
+                r = c.get(url, params=params)
+                r.raise_for_status()
+                return r.json().get("history", [])
+        except Exception as e:
+            logger.warning(f"History fetch error: {e}")
             return None
-
-        logger.info(
-            f"Fetching price history for Market ID: {market_id}, from {datetime.fromtimestamp(start_timestamp)} UTC..."
-        )
-
-        # Use httpx directly for this endpoint, as ClobClient doesn't have a direct method.
-        # Wrap httpx.get in a lambda so it can be passed to _robust_api_call.
-        def api_func():
-            history_url = f"https://clob.polymarket.com/prices-history"
-            response = httpx.get(
-                history_url,
-                params={
-                    "market": market_id,
-                    "fidelity": fidelity,
-                    "startTs": start_timestamp,  # Include the start timestamp
-                },
-            )
-            response.raise_for_status()  # Raise an exception for bad status codes
-            return response.json()
-
-        response_data = self._robust_api_call(api_func)
-
-        if response_data and "history" in response_data:
-            logger.success(
-                f"Successfully fetched {len(response_data['history'])} data points for market {market_id}."
-            )
-            return response_data["history"]
-        elif response_data:
-            logger.warning(
-                f"Price history response for market {market_id} did not contain a 'history' key. Response: {response_data}"
-            )
-            return None
-        else:
-            logger.error(f"Failed to fetch price history for market {market_id}.")
-            return None
+    
+    def get_market_details(self, keywords: list) -> dict | None:
+        """Legacy helper"""
+        return None

@@ -34,9 +34,9 @@ def test_basic_nbinom_calculation():
     assert isinstance(probs, dict)
     assert len(probs) == len(BINS_CONFIG_EXAMPLE)
     # The sum of probabilities for all bins should be very close to 1.0
-    assert np.isclose(sum(probs.values()), 1.0, atol=1e-5), (
-        "Probabilities should sum to 1"
-    )
+    assert np.isclose(
+        sum(probs.values()), 1.0, atol=1e-5
+    ), "Probabilities should sum to 1"
     assert probs["220-239"] > 0, "Expected some probability in the central bin"
 
 
@@ -64,9 +64,9 @@ def test_impossible_bin_due_to_high_actuals():
     # The bin we are currently in should have some probability
     assert probs["220-239"] > 0
     # The sum of remaining possibilities should still be close to 1
-    assert np.isclose(sum(probs.values()), 1.0, atol=1e-5), (
-        "Probabilities should still sum to 1"
-    )
+    assert np.isclose(
+        sum(probs.values()), 1.0, atol=1e-5
+    ), "Probabilities should still sum to 1"
 
 
 def test_shift_logic_when_actuals_are_in_a_bin():

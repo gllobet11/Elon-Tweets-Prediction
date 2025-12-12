@@ -2,50 +2,31 @@ import pandas as pd
 import numpy as np
 from loguru import logger
 
-def extract_prophet_coefficients(model, regressor_names: list) -> pd.DataFrame:
+from prophet.utilities import regressor_coefficients
+
+def extract_prophet_coefficients(m, regressor_names=None):
     """
-    Safely extracts coefficients for specific regressors from a Prophet model.
-    
-    Args:
-        model: The trained Prophet model object.
-        regressor_names: List of strings representing the custom regressors to extract.
+    Extrae los coeficientes reales (Beta) usando la utilidad nativa de Prophet.
+    Esto maneja automáticamente la des-estandarización y es compatible con
+    todas las versiones recientes.
+    """
+    try:
+        # 1. Usamos la función oficial de Prophet para obtener coeficientes
+        # Esto devuelve un DataFrame con columnas: 'regressor', 'regressor_mode', 'center', 'coef'
+        df_coeffs = regressor_coefficients(m)
         
-    Returns:
-        pd.DataFrame: DataFrame with columns ['Feature', 'Coefficient', 'Abs_Coefficient']
-    """
-    if 'beta' not in model.params:
-        logger.warning("Model does not contain 'beta' params. Was it trained with MCMC or MAP?")
-        return pd.DataFrame()
+        # 2. Renombramos para que coincida con lo que espera tu script model_analysis.py
+        # 'coef' es el valor real (des-estandarizado), equivalente a 'Value'
+        df_coeffs = df_coeffs.rename(columns={"regressor": "Regressor", "coef": "Value"})
+        
+        # 3. Filtrar solo los regresores que nos interesan (si se pasa la lista)
+        if regressor_names:
+            # Aseguramos que solo devolvemos los que existen en el modelo para evitar errores
+            df_coeffs = df_coeffs[df_coeffs["Regressor"].isin(regressor_names)]
+        
+        # 4. Devolver solo las columnas necesarias
+        return df_coeffs[["Regressor", "Value"]]
 
-    beta = model.params['beta']
-    # If beta is (n_samples, n_features), take the mean across samples
-    if beta.ndim > 1 and beta.shape[0] > 1:
-        beta = beta.mean(axis=0)
-    elif beta.ndim > 1:
-        beta = beta[0]
-
-    feature_data = []
-
-    for name in regressor_names:
-        # Check if the regressor exists in the model's component columns
-        if name not in model.train_component_cols.columns:
-            logger.warning(f"Regressor '{name}' not found in model components. Skipping.")
-            continue
-
-        # Find the column index in the beta matrix corresponding to this regressor
-        # train_component_cols is a matrix where 1 indicates the feature is active
-        col_index = np.where(model.train_component_cols[name] == 1)[0]
-
-        if len(col_index) > 0:
-            # Extract coefficient (summing if it spans multiple columns, though usually it's 1-to-1 for linear)
-            coeff_value = np.sum(beta[col_index])
-            feature_data.append({
-                'Feature': name,
-                'Coefficient': coeff_value,
-                'Abs_Coefficient': abs(coeff_value)
-            })
-
-    if not feature_data:
-        return pd.DataFrame(columns=['Feature', 'Coefficient', 'Abs_Coefficient'])
-
-    return pd.DataFrame(feature_data).sort_values(by='Abs_Coefficient', ascending=False)
+    except Exception as e:
+        print(f"Error extracting coefficients: {e}")
+        return pd.DataFrame(columns=["Regressor", "Value"])

@@ -43,6 +43,9 @@ MARKET_BINS["500+"] = {
 # Si prefieres rellenar a mano los IDs de esta semana, hazlo aquí sobreescribiendo.
 # Si usas el script de auto-fetch, esto se ignorará.
 
-# Ejemplo de cómo se ve (Descomentar para hardcodear):
-# MARKET_BINS["140-159"]["id"] = "0x241..."
-# MARKET_BINS["160-179"]["id"] = "0x882..."
+# ==========================================
+# 4. ORDEN CANÓNICO DE BINS
+# ==========================================
+# Generamos una lista ordenada de los bins para asegurar consistencia en todo el proyecto.
+# Se ordena numéricamente por el límite inferior de cada bin.
+BINS_ORDER = sorted(MARKET_BINS.keys(), key=lambda k: MARKET_BINS[k]["lower"])

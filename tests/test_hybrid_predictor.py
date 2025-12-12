@@ -3,6 +3,7 @@ test_hybrid_predictor.py
 
 Tests for the refactored, recursive walk-forward prediction logic.
 """
+
 import os
 import sys
 import pickle
@@ -19,6 +20,7 @@ from src.strategy.hybrid_predictor import get_hybrid_prediction
 from src.ingestion.unified_feed import load_unified_data
 from src.processing.feature_eng import FeatureEngineer
 
+
 @pytest.fixture(scope="module")
 def prophet_model():
     """Loads the latest trained Prophet model for testing."""
@@ -28,7 +30,8 @@ def prophet_model():
     latest_model_path = max(model_files, key=os.path.getmtime)
     with open(latest_model_path, "rb") as f:
         model_package = pickle.load(f)
-    return model_package['model']
+    return model_package["model"]
+
 
 @pytest.fixture(scope="module")
 def all_features_df():
@@ -39,10 +42,11 @@ def all_features_df():
     df_granular = load_unified_data()
     if df_granular.empty:
         pytest.fail("Could not load unified data for creating test features.")
-    
+
     feature_engineer = FeatureEngineer()
     features = feature_engineer.process_data(df_granular)
     return features
+
 
 def test_recursive_prediction_logic(prophet_model, all_features_df):
     """
@@ -61,7 +65,7 @@ def test_recursive_prediction_logic(prophet_model, all_features_df):
     predictions_df, metrics = get_hybrid_prediction(
         prophet_model=prophet_model,
         all_features_df=all_features_df,
-        days_forward=days_to_predict
+        days_forward=days_to_predict,
     )
 
     # Assert
@@ -71,16 +75,25 @@ def test_recursive_prediction_logic(prophet_model, all_features_df):
     assert not predictions_df.empty, "Prediction DataFrame should not be empty."
 
     # 2. Check dimensions
-    assert len(predictions_df) == days_to_predict, f"Should predict for {days_to_predict} days."
-    
+    assert (
+        len(predictions_df) == days_to_predict
+    ), f"Should predict for {days_to_predict} days."
+
     # 3. Check data integrity and reasonableness
-    assert not predictions_df['y_pred'].isnull().any(), "Predictions should not contain any NaNs."
-    assert predictions_df['y_pred'].sum() > 0, "Sum of predictions should be a positive value."
-    
+    assert (
+        not predictions_df["y_pred"].isnull().any()
+    ), "Predictions should not contain any NaNs."
+    assert (
+        predictions_df["y_pred"].sum() > 0
+    ), "Sum of predictions should be a positive value."
+
     # 4. Check metrics consistency
     assert "weekly_total_prediction" in metrics
-    assert metrics['weekly_total_prediction'] == predictions_df['y_pred'].sum(), "Metrics should match the DataFrame."
-    assert metrics['sum_of_actuals'] == 0, "Actuals should be zero in a pure forecast."
+    assert (
+        metrics["weekly_total_prediction"] == predictions_df["y_pred"].sum()
+    ), "Metrics should match the DataFrame."
+    assert metrics["sum_of_actuals"] == 0, "Actuals should be zero in a pure forecast."
+
 
 def test_recursive_predictor_handles_empty_input(prophet_model):
     """
@@ -91,12 +104,10 @@ def test_recursive_predictor_handles_empty_input(prophet_model):
 
     # Act
     predictions_df, metrics = get_hybrid_prediction(
-        prophet_model=prophet_model,
-        all_features_df=empty_df,
-        days_forward=7
+        prophet_model=prophet_model, all_features_df=empty_df, days_forward=7
     )
 
     # Assert
     assert predictions_df.empty
     assert isinstance(metrics, dict)
-    assert "weekly_total_prediction" not in metrics # Or check for zero values
+    assert "weekly_total_prediction" not in metrics  # Or check for zero values

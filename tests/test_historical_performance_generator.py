@@ -85,22 +85,22 @@ def test_generate_backtest_predictions(mock_tweet_data):
 
     assert not df_performance.empty, "The performance DataFrame should not be empty."
     expected_cols = {"week_start_date", "y_true", "y_pred"}
-    assert set(df_performance.columns) == expected_cols, (
-        f"DataFrame columns are wrong. Expected {expected_cols}"
-    )
+    assert (
+        set(df_performance.columns) == expected_cols
+    ), f"DataFrame columns are wrong. Expected {expected_cols}"
 
-    assert len(df_performance) == weeks_to_validate, (
-        f"Expected exactly {weeks_to_validate} rows, but got {len(df_performance)}"
-    )
+    assert (
+        len(df_performance) == weeks_to_validate
+    ), f"Expected exactly {weeks_to_validate} rows, but got {len(df_performance)}"
 
-    assert all(df_performance["y_true"] == expected_y_true), (
-        f"y_true should be {expected_y_true} for all weeks. Got: {df_performance['y_true'].tolist()}"
-    )
+    assert all(
+        df_performance["y_true"] == expected_y_true
+    ), f"y_true should be {expected_y_true} for all weeks. Got: {df_performance['y_true'].tolist()}"
 
     tolerance = 10
     prediction_errors = abs(df_performance["y_pred"] - expected_y_true)
-    assert all(prediction_errors < tolerance), (
-        f"y_pred is not within the tolerance of {tolerance}. Errors: {prediction_errors.tolist()}"
-    )
+    assert all(
+        prediction_errors < tolerance
+    ), f"y_pred is not within the tolerance of {tolerance}. Errors: {prediction_errors.tolist()}"
 
     print("✅ All assertions passed.")

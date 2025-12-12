@@ -116,12 +116,8 @@ def verify_feature_engineering():
         )
         print(f"  -> Simulated market date (aware): {market_start_date_aware}")
 
-        # The key fix: convert it to timezone-naive for comparison
-        market_start_date_naive = market_start_date_aware.tz_localize(None)
-        print(f"  -> Market date (naive) for comparison: {market_start_date_naive}")
-
         # Perform the split
-        train_features = all_features[all_features.index < market_start_date_naive]
+        train_features = all_features[all_features.index < market_start_date_aware]
         predict_features = all_features.iloc[[-1]]
 
         print("\n✅ Data split performed successfully.")

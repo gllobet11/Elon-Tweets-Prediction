@@ -53,9 +53,9 @@ The automated script executes the following steps, which can also be run manuall
     -   `best_prophet_model_YYYYMMDD.pkl`
     -   `data/processed/all_models_historical_performance.csv`
 
-**Step 3: Generate Historical Performance (`tools/generate_historical_performance.py`)**
--   **Purpose**: Uses the saved production model to generate backtested predictions for financial optimization.
--   **Command**: `python tools/generate_historical_performance.py`
+**Step 3: Generate Historical Performance (`tools/visualize_comparison.py`)**
+-   **Purpose**: Runs the model week by week (without looking into the future) to generate a CSV of predictions vs. reality for financial optimization.
+-   **Command**: `python tools/visualize_comparison.py`
 -   **Output**: `data/processed/historical_performance.csv`
 
 **Step 4: Optimize Financial Parameters (`src/strategy/financial_optimizer.py`)**
@@ -125,3 +125,7 @@ The `tools/` directory contains consolidated scripts for advanced analysis, veri
     -   `--task visualize_regime_change`: Visualizes tweet activity Z-scores over time.
 -   **`tools/data_verification.py`**: A suite of tools to check data integrity at various stages.
 -   **`tools/utilities.py`**: Helper functions for inspecting saved `.pkl` files and testing the Polymarket feed.
+-   **`tools/analyze_tweet_impact.py`**:
+    -   **Purpose**: Performs Exploratory Data Analysis (EDA) to visualize the relationship between Elon Musk's tweet activity and Polymarket price movements for specific outcome bins. It plots cumulative tweet counts against the prices of selected market bins over a defined time window.
+    -   **Usage**: Configure the `ANALYSIS_DATE`, `START_TIME_ET`, `END_TIME_ET`, `REPRESENTATIVE_BIN`, and `BINS_TO_PLOT` constants directly within the script to customize the analysis time window and the market bins whose prices you wish to observe.
+    -   **Output**: Generates a PNG plot named `multi_bin_cumulative_impact_YYYY-MM-DD.png` in the project root, showing the cumulative tweets and the price movements of the specified bins.
